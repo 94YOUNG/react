@@ -12,7 +12,7 @@
  * that support it.
  */
 import isValidElementType from 'shared/isValidElementType';
-import getComponentName from 'shared/getComponentName';
+import getComponentNameFromType from 'shared/getComponentNameFromType';
 import checkPropTypes from 'shared/checkPropTypes';
 import {
   getIteratorFn,
@@ -22,7 +22,7 @@ import {
   REACT_ELEMENT_TYPE,
 } from 'shared/ReactSymbols';
 import {warnAboutSpreadingKeyToJSX} from 'shared/ReactFeatureFlags';
-
+import hasOwnProperty from 'shared/hasOwnProperty';
 import {jsxDEV} from './ReactJSXElement';
 
 import {describeUnknownElementTypeFrameInDEV} from 'shared/ReactComponentStackFrame';
@@ -54,8 +54,6 @@ if (__DEV__) {
   propTypesMisspellWarningShown = false;
 }
 
-const hasOwnProperty = Object.prototype.hasOwnProperty;
-
 /**
  * Verifies the object is a ReactElement.
  * See https://reactjs.org/docs/react-api.html#isvalidelement
@@ -76,7 +74,7 @@ export function isValidElement(object) {
 function getDeclarationErrorAddendum() {
   if (__DEV__) {
     if (ReactCurrentOwner.current) {
-      const name = getComponentName(ReactCurrentOwner.current.type);
+      const name = getComponentNameFromType(ReactCurrentOwner.current.type);
       if (name) {
         return '\n\nCheck the render method of `' + name + '`.';
       }
@@ -154,7 +152,7 @@ function validateExplicitKey(element, parentType) {
       element._owner !== ReactCurrentOwner.current
     ) {
       // Give the component that originally created this child.
-      childOwner = ` It was passed a child from ${getComponentName(
+      childOwner = ` It was passed a child from ${getComponentNameFromType(
         element._owner.type,
       )}.`;
     }
@@ -227,7 +225,6 @@ function validatePropTypes(element) {
     if (type === null || type === undefined || typeof type === 'string') {
       return;
     }
-    const name = getComponentName(type);
     let propTypes;
     if (typeof type === 'function') {
       propTypes = type.propTypes;
@@ -243,9 +240,13 @@ function validatePropTypes(element) {
       return;
     }
     if (propTypes) {
+      // Intentionally inside to avoid triggering lazy initializers:
+      const name = getComponentNameFromType(type);
       checkPropTypes(propTypes, element.props, 'prop', name, element);
     } else if (type.PropTypes !== undefined && !propTypesMisspellWarningShown) {
       propTypesMisspellWarningShown = true;
+      // Intentionally inside to avoid triggering lazy initializers:
+      const name = getComponentNameFromType(type);
       console.error(
         'Component %s declared `PropTypes` instead of `propTypes`. Did you misspell the property assignment?',
         name || 'Unknown',
@@ -331,7 +332,7 @@ export function jsxWithValidation(
       } else if (Array.isArray(type)) {
         typeString = 'array';
       } else if (type !== undefined && type.$$typeof === REACT_ELEMENT_TYPE) {
-        typeString = `<${getComponentName(type.type) || 'Unknown'} />`;
+        typeString = `<${getComponentNameFromType(type.type) || 'Unknown'} />`;
         info =
           ' Did you accidentally export a JSX literal instead of a component?';
       } else {
@@ -392,7 +393,7 @@ export function jsxWithValidation(
           'React.jsx: Spreading a key to JSX is a deprecated pattern. ' +
             'Explicitly pass a key after spreading props in your JSX call. ' +
             'E.g. <%s {...props} key={key} />',
-          getComponentName(type) || 'ComponentName',
+          getComponentNameFromType(type) || 'ComponentName',
         );
       }
     }

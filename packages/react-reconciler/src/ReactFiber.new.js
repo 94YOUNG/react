@@ -8,29 +8,25 @@
  */
 
 import type {ReactElement} from 'shared/ReactElementType';
-import type {
-  ReactFragment,
-  ReactPortal,
-  ReactFundamentalComponent,
-  ReactScope,
-} from 'shared/ReactTypes';
+import type {ReactFragment, ReactPortal, ReactScope} from 'shared/ReactTypes';
 import type {Fiber} from './ReactInternalTypes';
 import type {RootTag} from './ReactRootTags';
 import type {WorkTag} from './ReactWorkTags';
 import type {TypeOfMode} from './ReactTypeOfMode';
-import type {Lanes} from './ReactFiberLane';
+import type {Lanes} from './ReactFiberLane.new';
 import type {SuspenseInstance} from './ReactFiberHostConfig';
 import type {OffscreenProps} from './ReactFiberOffscreenComponent';
 
 import invariant from 'shared/invariant';
 import {
+  createRootStrictEffectsByDefault,
+  enableCache,
+  enableStrictEffects,
   enableProfilerTimer,
-  enableFundamentalAPI,
   enableScopeAPI,
-  enableBlocksAPI,
 } from 'shared/ReactFeatureFlags';
 import {NoFlags, Placement, StaticMask} from './ReactFiberFlags';
-import {ConcurrentRoot, BlockingRoot} from './ReactRootTags';
+import {ConcurrentRoot} from './ReactRootTags';
 import {
   IndeterminateComponent,
   ClassComponent,
@@ -51,13 +47,12 @@ import {
   MemoComponent,
   SimpleMemoComponent,
   LazyComponent,
-  FundamentalComponent,
   ScopeComponent,
-  Block,
   OffscreenComponent,
   LegacyHiddenComponent,
+  CacheComponent,
 } from './ReactWorkTags';
-import getComponentName from 'shared/getComponentName';
+import getComponentNameFromFiber from 'react-reconciler/src/getComponentNameFromFiber';
 
 import {isDevToolsPresent} from './ReactFiberDevToolsHook.new';
 import {
@@ -65,14 +60,14 @@ import {
   resolveFunctionForHotReloading,
   resolveForwardRefForHotReloading,
 } from './ReactFiberHotReloading.new';
-import {NoLanes} from './ReactFiberLane';
+import {NoLanes} from './ReactFiberLane.new';
 import {
   NoMode,
   ConcurrentMode,
   DebugTracingMode,
   ProfileMode,
-  StrictMode,
-  BlockingMode,
+  StrictLegacyMode,
+  StrictEffectsMode,
 } from './ReactTypeOfMode';
 import {
   REACT_FORWARD_REF_TYPE,
@@ -86,11 +81,10 @@ import {
   REACT_SUSPENSE_LIST_TYPE,
   REACT_MEMO_TYPE,
   REACT_LAZY_TYPE,
-  REACT_FUNDAMENTAL_TYPE,
   REACT_SCOPE_TYPE,
-  REACT_BLOCK_TYPE,
   REACT_OFFSCREEN_TYPE,
   REACT_LEGACY_HIDDEN_TYPE,
+  REACT_CACHE_TYPE,
 } from 'shared/ReactSymbols';
 
 export type {Fiber};
@@ -239,11 +233,6 @@ export function resolveLazyComponentTag(Component: Function): WorkTag {
     if ($$typeof === REACT_MEMO_TYPE) {
       return MemoComponent;
     }
-    if (enableBlocksAPI) {
-      if ($$typeof === REACT_BLOCK_TYPE) {
-        return Block;
-      }
-    }
   }
   return IndeterminateComponent;
 }
@@ -283,6 +272,10 @@ export function createWorkInProgress(current: Fiber, pendingProps: any): Fiber {
     workInProgress.type = current.type;
 
     // We already have an alternate.
+    // Reset the effect tag.
+    workInProgress.flags = NoFlags;
+
+    // The effects are no longer valid.
     workInProgress.subtreeFlags = NoFlags;
     workInProgress.deletions = null;
 
@@ -360,9 +353,11 @@ export function resetWorkInProgress(workInProgress: Fiber, renderLanes: Lanes) {
   // We assume pendingProps, index, key, ref, return are still untouched to
   // avoid doing another reconciliation.
 
-  // Reset the effect tag but keep any Placement tags, since that's something
+  // Reset the effect flags but keep any Placement tags, since that's something
   // that child fiber is setting, not the reconciliation.
-  workInProgress.flags &= Placement;
+  workInProgress.flags &= StaticMask | Placement;
+
+  // The effects are no longer valid.
 
   const current = workInProgress.alternate;
   if (current === null) {
@@ -392,7 +387,7 @@ export function resetWorkInProgress(workInProgress: Fiber, renderLanes: Lanes) {
     workInProgress.lanes = current.lanes;
 
     workInProgress.child = current.child;
-    workInProgress.subtreeFlags = current.subtreeFlags;
+    workInProgress.subtreeFlags = NoFlags;
     workInProgress.deletions = null;
     workInProgress.memoizedProps = current.memoizedProps;
     workInProgress.memoizedState = current.memoizedState;
@@ -422,12 +417,29 @@ export function resetWorkInProgress(workInProgress: Fiber, renderLanes: Lanes) {
   return workInProgress;
 }
 
-export function createHostRootFiber(tag: RootTag): Fiber {
+export function createHostRootFiber(
+  tag: RootTag,
+  strictModeLevelOverride: null | number,
+): Fiber {
   let mode;
   if (tag === ConcurrentRoot) {
-    mode = ConcurrentMode | BlockingMode | StrictMode;
-  } else if (tag === BlockingRoot) {
-    mode = BlockingMode | StrictMode;
+    mode = ConcurrentMode;
+    if (strictModeLevelOverride !== null) {
+      if (strictModeLevelOverride >= 1) {
+        mode |= StrictLegacyMode;
+      }
+      if (enableStrictEffects) {
+        if (strictModeLevelOverride >= 2) {
+          mode |= StrictEffectsMode;
+        }
+      }
+    } else {
+      if (enableStrictEffects && createRootStrictEffectsByDefault) {
+        mode |= StrictLegacyMode | StrictEffectsMode;
+      } else {
+        mode |= StrictLegacyMode;
+      }
+    }
   } else {
     mode = NoMode;
   }
@@ -476,7 +488,21 @@ export function createFiberFromTypeAndProps(
         break;
       case REACT_STRICT_MODE_TYPE:
         fiberTag = Mode;
-        mode |= StrictMode;
+
+        // Legacy strict mode (<StrictMode> without any level prop) defaults to level 1.
+        const level =
+          pendingProps.unstable_level == null ? 1 : pendingProps.unstable_level;
+
+        // Levels cascade; higher levels inherit all lower level modes.
+        // It is explicitly not supported to lower a mode with nesting, only to increase it.
+        if (level >= 1) {
+          mode |= StrictLegacyMode;
+        }
+        if (enableStrictEffects) {
+          if (level >= 2) {
+            mode |= StrictEffectsMode;
+          }
+        }
         break;
       case REACT_PROFILER_TYPE:
         return createFiberFromProfiler(pendingProps, mode, lanes, key);
@@ -491,6 +517,11 @@ export function createFiberFromTypeAndProps(
       case REACT_SCOPE_TYPE:
         if (enableScopeAPI) {
           return createFiberFromScope(type, pendingProps, mode, lanes, key);
+        }
+      // eslint-disable-next-line no-fallthrough
+      case REACT_CACHE_TYPE:
+        if (enableCache) {
+          return createFiberFromCache(pendingProps, mode, lanes, key);
         }
       // eslint-disable-next-line no-fallthrough
       default: {
@@ -516,20 +547,6 @@ export function createFiberFromTypeAndProps(
               fiberTag = LazyComponent;
               resolvedType = null;
               break getTag;
-            case REACT_BLOCK_TYPE:
-              fiberTag = Block;
-              break getTag;
-            case REACT_FUNDAMENTAL_TYPE:
-              if (enableFundamentalAPI) {
-                return createFiberFromFundamental(
-                  type,
-                  pendingProps,
-                  mode,
-                  lanes,
-                  key,
-                );
-              }
-              break;
           }
         }
         let info = '';
@@ -545,7 +562,7 @@ export function createFiberFromTypeAndProps(
               "it's defined in, or you might have mixed up default and " +
               'named imports.';
           }
-          const ownerName = owner ? getComponentName(owner.type) : null;
+          const ownerName = owner ? getComponentNameFromFiber(owner) : null;
           if (ownerName) {
             info += '\n\nCheck the render method of `' + ownerName + '`.';
           }
@@ -612,20 +629,6 @@ export function createFiberFromFragment(
   return fiber;
 }
 
-export function createFiberFromFundamental(
-  fundamentalComponent: ReactFundamentalComponent<any, any>,
-  pendingProps: any,
-  mode: TypeOfMode,
-  lanes: Lanes,
-  key: null | string,
-): Fiber {
-  const fiber = createFiber(FundamentalComponent, pendingProps, key, mode);
-  fiber.elementType = fundamentalComponent;
-  fiber.type = fundamentalComponent;
-  fiber.lanes = lanes;
-  return fiber;
-}
-
 function createFiberFromScope(
   scope: ReactScope,
   pendingProps: any,
@@ -653,9 +656,7 @@ function createFiberFromProfiler(
   }
 
   const fiber = createFiber(Profiler, pendingProps, key, mode | ProfileMode);
-  // TODO: The Profiler fiber shouldn't have a type. It has a tag.
   fiber.elementType = REACT_PROFILER_TYPE;
-  fiber.type = REACT_PROFILER_TYPE;
   fiber.lanes = lanes;
 
   if (enableProfilerTimer) {
@@ -675,13 +676,7 @@ export function createFiberFromSuspense(
   key: null | string,
 ) {
   const fiber = createFiber(SuspenseComponent, pendingProps, key, mode);
-
-  // TODO: The SuspenseComponent fiber shouldn't have a type. It has a tag.
-  // This needs to be fixed in getComponentName so that it relies on the tag
-  // instead.
-  fiber.type = REACT_SUSPENSE_TYPE;
   fiber.elementType = REACT_SUSPENSE_TYPE;
-
   fiber.lanes = lanes;
   return fiber;
 }
@@ -693,12 +688,6 @@ export function createFiberFromSuspenseList(
   key: null | string,
 ) {
   const fiber = createFiber(SuspenseListComponent, pendingProps, key, mode);
-  if (__DEV__) {
-    // TODO: The SuspenseListComponent fiber shouldn't have a type. It has a tag.
-    // This needs to be fixed in getComponentName so that it relies on the tag
-    // instead.
-    fiber.type = REACT_SUSPENSE_LIST_TYPE;
-  }
   fiber.elementType = REACT_SUSPENSE_LIST_TYPE;
   fiber.lanes = lanes;
   return fiber;
@@ -711,12 +700,6 @@ export function createFiberFromOffscreen(
   key: null | string,
 ) {
   const fiber = createFiber(OffscreenComponent, pendingProps, key, mode);
-  // TODO: The OffscreenComponent fiber shouldn't have a type. It has a tag.
-  // This needs to be fixed in getComponentName so that it relies on the tag
-  // instead.
-  if (__DEV__) {
-    fiber.type = REACT_OFFSCREEN_TYPE;
-  }
   fiber.elementType = REACT_OFFSCREEN_TYPE;
   fiber.lanes = lanes;
   return fiber;
@@ -729,13 +712,19 @@ export function createFiberFromLegacyHidden(
   key: null | string,
 ) {
   const fiber = createFiber(LegacyHiddenComponent, pendingProps, key, mode);
-  // TODO: The LegacyHidden fiber shouldn't have a type. It has a tag.
-  // This needs to be fixed in getComponentName so that it relies on the tag
-  // instead.
-  if (__DEV__) {
-    fiber.type = REACT_LEGACY_HIDDEN_TYPE;
-  }
   fiber.elementType = REACT_LEGACY_HIDDEN_TYPE;
+  fiber.lanes = lanes;
+  return fiber;
+}
+
+export function createFiberFromCache(
+  pendingProps: any,
+  mode: TypeOfMode,
+  lanes: Lanes,
+  key: null | string,
+) {
+  const fiber = createFiber(CacheComponent, pendingProps, key, mode);
+  fiber.elementType = REACT_CACHE_TYPE;
   fiber.lanes = lanes;
   return fiber;
 }
@@ -752,9 +741,7 @@ export function createFiberFromText(
 
 export function createFiberFromHostInstanceForDeletion(): Fiber {
   const fiber = createFiber(HostComponent, null, null, NoMode);
-  // TODO: These should not need a type.
   fiber.elementType = 'DELETED';
-  fiber.type = 'DELETED';
   return fiber;
 }
 

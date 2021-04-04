@@ -23,6 +23,7 @@ import type {OpaqueIDType} from 'react-reconciler/src/ReactFiberHostConfig';
 import {NoMode} from 'react-reconciler/src/ReactTypeOfMode';
 
 import ErrorStackParser from 'error-stack-parser';
+import invariant from 'shared/invariant';
 import ReactSharedInternals from 'shared/ReactSharedInternals';
 import {REACT_OPAQUE_ID_TYPE} from 'shared/ReactSymbols';
 import {
@@ -30,7 +31,6 @@ import {
   SimpleMemoComponent,
   ContextProvider,
   ForwardRef,
-  Block,
 } from 'react-reconciler/src/ReactWorkTags';
 
 type CurrentDispatcherRef = typeof ReactSharedInternals.ReactCurrentDispatcher;
@@ -73,6 +73,10 @@ function getPrimitiveStackCache(): Map<string, Array<any>> {
       Dispatcher.useState(null);
       Dispatcher.useReducer((s, a) => s, null);
       Dispatcher.useRef(null);
+      if (typeof Dispatcher.useCacheRefresh === 'function') {
+        // This type check is for Flow only.
+        Dispatcher.useCacheRefresh();
+      }
       Dispatcher.useLayoutEffect(() => {});
       Dispatcher.useEffect(() => {});
       Dispatcher.useImperativeHandle(undefined, () => null);
@@ -101,18 +105,16 @@ function nextHook(): null | Hook {
   return hook;
 }
 
-function readContext<T>(
-  context: ReactContext<T>,
-  observedBits: void | number | boolean,
-): T {
+function getCacheForType<T>(resourceType: () => T): T {
+  invariant(false, 'Not implemented.');
+}
+
+function readContext<T>(context: ReactContext<T>): T {
   // For now we don't expose readContext usage in the hooks debugging info.
   return context._currentValue;
 }
 
-function useContext<T>(
-  context: ReactContext<T>,
-  observedBits: void | number | boolean,
-): T {
+function useContext<T>(context: ReactContext<T>): T {
   hookLog.push({
     primitive: 'Context',
     stackError: new Error(),
@@ -165,6 +167,16 @@ function useRef<T>(initialValue: T): {|current: T|} {
     value: ref.current,
   });
   return ref;
+}
+
+function useCacheRefresh(): () => void {
+  const hook = nextHook();
+  hookLog.push({
+    primitive: 'CacheRefresh',
+    stackError: new Error(),
+    value: hook !== null ? hook.memoizedState : function refresh() {},
+  });
+  return () => {};
 }
 
 function useLayoutEffect(
@@ -299,7 +311,9 @@ function useOpaqueIdentifier(): OpaqueIDType | void {
 }
 
 const Dispatcher: DispatcherType = {
+  getCacheForType,
   readContext,
+  useCacheRefresh,
   useCallback,
   useContext,
   useEffect,
@@ -667,8 +681,7 @@ export function inspectHooksOfFiber(
   if (
     fiber.tag !== FunctionComponent &&
     fiber.tag !== SimpleMemoComponent &&
-    fiber.tag !== ForwardRef &&
-    fiber.tag !== Block
+    fiber.tag !== ForwardRef
   ) {
     throw new Error(
       'Unknown Fiber. Needs to be a function component to inspect hooks.',

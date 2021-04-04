@@ -406,7 +406,10 @@ export default {
             });
           }
 
-          if (dependencyNode.parent.type === 'TSTypeQuery') {
+          if (
+            dependencyNode.parent.type === 'TSTypeQuery' ||
+            dependencyNode.parent.type === 'TSTypeReference'
+          ) {
             continue;
           }
 
@@ -1116,6 +1119,19 @@ export default {
       const declaredDependenciesNode = node.arguments[callbackIndex + 1];
       const isEffect = /Effect($|[^a-z])/g.test(reactiveHookName);
 
+      // Check whether a callback is supplied. If there is no callback supplied
+      // then the hook will not work and React will throw a TypeError.
+      // So no need to check for dependency inclusion.
+      if (!callback) {
+        reportProblem({
+          node: reactiveHook,
+          message:
+            `React Hook ${reactiveHookName} requires an effect callback. ` +
+            `Did you forget to pass a callback to the hook?`,
+        });
+        return;
+      }
+
       // Check the declared dependencies for this reactive hook. If there is no
       // second argument then the reactive callback will re-run on every render.
       // So no need to check for dependency inclusion.
@@ -1619,7 +1635,7 @@ function markNode(node, optionalChains, result) {
  * Otherwise throw.
  */
 function analyzePropertyChain(node, optionalChains) {
-  if (node.type === 'Identifier') {
+  if (node.type === 'Identifier' || node.type === 'JSXIdentifier') {
     const result = node.name;
     if (optionalChains) {
       // Mark as required.
@@ -1640,6 +1656,11 @@ function analyzePropertyChain(node, optionalChains) {
     return result;
   } else if (node.type === 'ChainExpression' && !node.computed) {
     const expression = node.expression;
+
+    if (expression.type === 'CallExpression') {
+      throw new Error(`Unsupported node type: ${expression.type}`);
+    }
+
     const object = analyzePropertyChain(expression.object, optionalChains);
     const property = analyzePropertyChain(expression.property, null);
     const result = `${object}.${property}`;
@@ -1776,7 +1797,8 @@ function isNodeLike(val) {
 
 function isSameIdentifier(a, b) {
   return (
-    a.type === 'Identifier' &&
+    (a.type === 'Identifier' || a.type === 'JSXIdentifier') &&
+    a.type === b.type &&
     a.name === b.name &&
     a.range[0] === b.range[0] &&
     a.range[1] === b.range[1]

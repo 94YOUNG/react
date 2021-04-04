@@ -20,7 +20,6 @@ import type {
   SuspenseInstance,
   Props,
 } from './ReactDOMHostConfig';
-import type {DOMEventName} from '../events/DOMEventNames';
 
 import {
   HostComponent,
@@ -44,15 +43,15 @@ const internalEventHandlersKey = '__reactEvents$' + randomKey;
 const internalEventHandlerListenersKey = '__reactListeners$' + randomKey;
 const internalEventHandlesSetKey = '__reactHandles$' + randomKey;
 
-export type ElementListenerMap = Map<
-  DOMEventName | string,
-  ElementListenerMapEntry | null,
->;
-
-export type ElementListenerMapEntry = {
-  passive: void | boolean,
-  listener: any => void,
-};
+export function detachDeletedInstance(node: Instance): void {
+  // TODO: This function is only called on host components. I don't think all of
+  // these fields are relevant.
+  delete (node: any)[internalInstanceKey];
+  delete (node: any)[internalPropsKey];
+  delete (node: any)[internalEventHandlersKey];
+  delete (node: any)[internalEventHandlerListenersKey];
+  delete (node: any)[internalEventHandlesSetKey];
+}
 
 export function precacheFiberNode(
   hostInst: Fiber,
@@ -207,12 +206,12 @@ export function updateFiberProps(
   (node: any)[internalPropsKey] = props;
 }
 
-export function getEventListenerMap(node: EventTarget): ElementListenerMap {
-  let elementListenerMap = (node: any)[internalEventHandlersKey];
-  if (elementListenerMap === undefined) {
-    elementListenerMap = (node: any)[internalEventHandlersKey] = new Map();
+export function getEventListenerSet(node: EventTarget): Set<string> {
+  let elementListenerSet = (node: any)[internalEventHandlersKey];
+  if (elementListenerSet === undefined) {
+    elementListenerSet = (node: any)[internalEventHandlersKey] = new Set();
   }
-  return elementListenerMap;
+  return elementListenerSet;
 }
 
 export function getFiberFromScopeInstance(

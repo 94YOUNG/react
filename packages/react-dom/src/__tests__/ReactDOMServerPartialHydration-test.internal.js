@@ -17,6 +17,7 @@ let ReactFeatureFlags;
 let Suspense;
 let SuspenseList;
 let act;
+let IdleEventPriority;
 
 function dispatchMouseEvent(to, from) {
   if (!to) {
@@ -79,15 +80,17 @@ describe('ReactDOMServerPartialHydration', () => {
 
     React = require('react');
     ReactDOM = require('react-dom');
-    act = require('react-dom/test-utils').act;
+    act = require('react-dom/test-utils').unstable_concurrentAct;
     ReactDOMServer = require('react-dom/server');
     Scheduler = require('scheduler');
     Suspense = React.Suspense;
     SuspenseList = React.SuspenseList;
+
+    IdleEventPriority = require('react-reconciler/constants').IdleEventPriority;
   });
 
   // Note: This is based on a similar component we use in www. We can delete
-  // once the extra div wrapper is no longer neccessary.
+  // once the extra div wrapper is no longer necessary.
   function LegacyHiddenDiv({children, mode}) {
     return (
       <div hidden={mode === 'hidden'}>
@@ -352,7 +355,7 @@ describe('ReactDOMServerPartialHydration', () => {
     }).toErrorDev(
       'Warning: Cannot hydrate Suspense in legacy mode. Switch from ' +
         'ReactDOM.hydrate(element, container) to ' +
-        'ReactDOM.createBlockingRoot(container, { hydrate: true })' +
+        'ReactDOM.createRoot(container, { hydrate: true })' +
         '.render(element) or remove the Suspense components from the server ' +
         'rendered components.' +
         '\n    in Suspense (at **)' +
@@ -367,7 +370,7 @@ describe('ReactDOMServerPartialHydration', () => {
     // This is a new node.
     expect(span).not.toBe(span2);
 
-    if (gate(flags => flags.new)) {
+    if (gate(flags => flags.dfsEffectsRefactor)) {
       // The effects list refactor causes this to be null because the Suspense Offscreen's child
       // is null. However, since we can't hydrate Suspense in legacy this change in behavior is ok
       expect(ref.current).toBe(null);
@@ -380,6 +383,7 @@ describe('ReactDOMServerPartialHydration', () => {
     resolve();
     await promise;
     Scheduler.unstable_flushAll();
+    await null;
     jest.runAllTimers();
 
     // We should now have hydrated with a ref on the existing span.
@@ -622,7 +626,7 @@ describe('ReactDOMServerPartialHydration', () => {
     expect(span.textContent).toBe('Hello');
 
     // Schedule an update at idle priority
-    Scheduler.unstable_runWithPriority(Scheduler.unstable_IdlePriority, () => {
+    ReactDOM.unstable_runWithPriority(IdleEventPriority, () => {
       root.render(<App text="Hi" className="hi" />);
     });
 
@@ -2181,17 +2185,17 @@ describe('ReactDOMServerPartialHydration', () => {
     expect(container.textContent).toBe('Click meHello');
 
     // We're now partially hydrated.
-    a.click();
+    await act(async () => {
+      a.click();
+    });
     expect(clicks).toBe(0);
 
     // Resolving the promise so that rendering can complete.
-    suspend = false;
-    resolve();
-    await promise;
-
-    Scheduler.unstable_flushAll();
-    jest.runAllTimers();
-
+    await act(async () => {
+      suspend = false;
+      resolve();
+      await promise;
+    });
     expect(clicks).toBe(1);
 
     expect(container.textContent).toBe('Hello');
@@ -2264,18 +2268,19 @@ describe('ReactDOMServerPartialHydration', () => {
     jest.runAllTimers();
 
     // We're now partially hydrated.
-    a.click();
+    await act(async () => {
+      a.click();
+    });
     // We should not have invoked the event yet because we're not
     // yet hydrated.
     expect(onEvent).toHaveBeenCalledTimes(0);
 
     // Resolving the promise so that rendering can complete.
-    suspend = false;
-    resolve();
-    await promise;
-
-    Scheduler.unstable_flushAll();
-    jest.runAllTimers();
+    await act(async () => {
+      suspend = false;
+      resolve();
+      await promise;
+    });
 
     expect(onEvent).toHaveBeenCalledTimes(2);
 
@@ -2338,7 +2343,9 @@ describe('ReactDOMServerPartialHydration', () => {
     root.render(<App />);
 
     // We'll do one click before hydrating.
-    a.click();
+    await act(async () => {
+      a.click();
+    });
     // This should be delayed.
     expect(clicks).toBe(0);
 
@@ -2346,17 +2353,17 @@ describe('ReactDOMServerPartialHydration', () => {
     jest.runAllTimers();
 
     // We're now partially hydrated.
-    a.click();
+    await act(async () => {
+      a.click();
+    });
     expect(clicks).toBe(0);
 
     // Resolving the promise so that rendering can complete.
-    suspend = false;
-    resolve();
-    await promise;
-
-    Scheduler.unstable_flushAll();
-    jest.runAllTimers();
-
+    await act(async () => {
+      suspend = false;
+      resolve();
+      await promise;
+    });
     expect(clicks).toBe(2);
 
     document.body.removeChild(container);
@@ -2430,19 +2437,19 @@ describe('ReactDOMServerPartialHydration', () => {
     jest.runAllTimers();
 
     // We're now partially hydrated.
-    a.click();
+    await act(async () => {
+      a.click();
+    });
     // We should not have invoked the event yet because we're not
     // yet hydrated.
     expect(onEvent).toHaveBeenCalledTimes(0);
 
     // Resolving the promise so that rendering can complete.
-    suspend = false;
-    resolve();
-    await promise;
-
-    Scheduler.unstable_flushAll();
-    jest.runAllTimers();
-
+    await act(async () => {
+      suspend = false;
+      resolve();
+      await promise;
+    });
     expect(onEvent).toHaveBeenCalledTimes(2);
 
     document.body.removeChild(container);
@@ -2504,17 +2511,18 @@ describe('ReactDOMServerPartialHydration', () => {
     jest.runAllTimers();
 
     // We're now partially hydrated.
-    span.click();
+    await act(async () => {
+      span.click();
+    });
     expect(clicksOnChild).toBe(0);
     expect(clicksOnParent).toBe(0);
 
     // Resolving the promise so that rendering can complete.
-    suspend = false;
-    resolve();
-    await promise;
-
-    Scheduler.unstable_flushAll();
-    jest.runAllTimers();
+    await act(async () => {
+      suspend = false;
+      resolve();
+      await promise;
+    });
 
     expect(clicksOnChild).toBe(1);
     // This will be zero due to the stopPropagation.
@@ -2583,16 +2591,17 @@ describe('ReactDOMServerPartialHydration', () => {
     Scheduler.unstable_flushAll();
 
     // The Suspense boundary is not yet hydrated.
-    a.click();
+    await act(async () => {
+      a.click();
+    });
     expect(clicks).toBe(0);
 
     // Resolving the promise so that rendering can complete.
-    suspend = false;
-    resolve();
-    await promise;
-
-    Scheduler.unstable_flushAll();
-    jest.runAllTimers();
+    await act(async () => {
+      suspend = false;
+      resolve();
+      await promise;
+    });
 
     // We're now full hydrated.
 
@@ -2852,20 +2861,22 @@ describe('ReactDOMServerPartialHydration', () => {
     expect(container.textContent).toBe('Click meHello');
 
     // We're now partially hydrated.
-    form.dispatchEvent(
-      new Event('submit', {
-        bubbles: true,
-      }),
-    );
+    await act(async () => {
+      form.dispatchEvent(
+        new Event('submit', {
+          bubbles: true,
+        }),
+      );
+    });
     expect(submits).toBe(0);
 
     // Resolving the promise so that rendering can complete.
-    suspend = false;
-    resolve();
-    await promise;
+    await act(async () => {
+      suspend = false;
+      resolve();
+      await promise;
+    });
 
-    Scheduler.unstable_flushAll();
-    jest.runAllTimers();
     expect(submits).toBe(1);
     expect(container.textContent).toBe('Hello');
     document.body.removeChild(container);

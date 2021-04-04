@@ -20,6 +20,7 @@ import type PartialRenderer from './ReactPartialRenderer';
 import {validateContextBounds} from './ReactPartialRendererContext';
 
 import invariant from 'shared/invariant';
+import {enableCache} from 'shared/ReactFeatureFlags';
 import is from 'shared/objectIs';
 
 type BasicStateAction<S> = (S => S) | S;
@@ -214,10 +215,11 @@ export function resetHooksState(): void {
   workInProgressHook = null;
 }
 
-function readContext<T>(
-  context: ReactContext<T>,
-  observedBits: void | number | boolean,
-): T {
+function getCacheForType<T>(resourceType: () => T): T {
+  invariant(false, 'Not implemented.');
+}
+
+function readContext<T>(context: ReactContext<T>): T {
   const threadID = currentPartialRenderer.threadID;
   validateContextBounds(context, threadID);
   if (__DEV__) {
@@ -233,10 +235,7 @@ function readContext<T>(
   return context[threadID];
 }
 
-function useContext<T>(
-  context: ReactContext<T>,
-  observedBits: void | number | boolean,
-): T {
+function useContext<T>(context: ReactContext<T>): T {
   if (__DEV__) {
     currentHookNameInDev = 'useContext';
   }
@@ -484,6 +483,10 @@ function useOpaqueIdentifier(): OpaqueIDType {
   );
 }
 
+function useCacheRefresh(): <T>(?() => T, ?T) => void {
+  invariant(false, 'Not implemented.');
+}
+
 function noop(): void {}
 
 export let currentPartialRenderer: PartialRenderer = (null: any);
@@ -512,3 +515,8 @@ export const Dispatcher: DispatcherType = {
   // Subscriptions are not setup in a server environment.
   useMutableSource,
 };
+
+if (enableCache) {
+  Dispatcher.getCacheForType = getCacheForType;
+  Dispatcher.useCacheRefresh = useCacheRefresh;
+}

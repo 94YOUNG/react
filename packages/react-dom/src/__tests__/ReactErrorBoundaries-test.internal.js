@@ -42,9 +42,10 @@ describe('ReactErrorBoundaries', () => {
     PropTypes = require('prop-types');
     ReactFeatureFlags = require('shared/ReactFeatureFlags');
     ReactFeatureFlags.replayFailedUnitOfWorkWithInvokeGuardedCallback = false;
+    ReactFeatureFlags.skipUnmountedBoundaries = true;
     ReactDOM = require('react-dom');
     React = require('react');
-    act = require('react-dom/test-utils').act;
+    act = require('react-dom/test-utils').unstable_concurrentAct;
     Scheduler = require('scheduler');
 
     BrokenConstructor = class extends React.Component {
@@ -2474,7 +2475,6 @@ describe('ReactErrorBoundaries', () => {
     );
   });
 
-  // @gate skipUnmountedBoundaries
   it('catches errors thrown in componentWillUnmount', () => {
     class LocalErrorBoundary extends React.Component {
       state = {error: null};
@@ -2559,7 +2559,6 @@ describe('ReactErrorBoundaries', () => {
     ]);
   });
 
-  // @gate skipUnmountedBoundaries
   it('catches errors thrown while detaching refs', () => {
     class LocalErrorBoundary extends React.Component {
       state = {error: null};

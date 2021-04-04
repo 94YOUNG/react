@@ -20,19 +20,35 @@ import type {SuspenseInstance} from './ReactFiberHostConfig';
 import type {WorkTag} from './ReactWorkTags';
 import type {TypeOfMode} from './ReactTypeOfMode';
 import type {Flags} from './ReactFiberFlags';
-import type {Lane, LanePriority, Lanes, LaneMap} from './ReactFiberLane';
-import type {HookType} from './ReactFiberHooks.old';
+import type {Lane, Lanes, LaneMap} from './ReactFiberLane.old';
 import type {RootTag} from './ReactRootTags';
 import type {TimeoutHandle, NoTimeout} from './ReactFiberHostConfig';
 import type {Wakeable} from 'shared/ReactTypes';
 import type {Interaction} from 'scheduler/src/Tracing';
+import type {Cache} from './ReactFiberCacheComponent.old';
 
-export type ReactPriorityLevel = 99 | 98 | 97 | 96 | 95 | 90;
+// Unwind Circular: moved from ReactFiberHooks.old
+export type HookType =
+  | 'useState'
+  | 'useReducer'
+  | 'useContext'
+  | 'useRef'
+  | 'useEffect'
+  | 'useLayoutEffect'
+  | 'useCallback'
+  | 'useMemo'
+  | 'useImperativeHandle'
+  | 'useDebugValue'
+  | 'useDeferredValue'
+  | 'useTransition'
+  | 'useMutableSource'
+  | 'useOpaqueIdentifier'
+  | 'useCacheRefresh';
 
 export type ContextDependency<T> = {
   context: ReactContext<T>,
-  observedBits: number,
   next: ContextDependency<mixed> | null,
+  memoizedValue: T,
   ...
 };
 
@@ -205,20 +221,22 @@ type BaseFiberRootProperties = {|
   // Node returned by Scheduler.scheduleCallback. Represents the next rendering
   // task that the root will work on.
   callbackNode: *,
-  callbackPriority: LanePriority,
+  callbackPriority: Lane,
   eventTimes: LaneMap<number>,
   expirationTimes: LaneMap<number>,
 
   pendingLanes: Lanes,
   suspendedLanes: Lanes,
   pingedLanes: Lanes,
-  expiredLanes: Lanes,
   mutableReadLanes: Lanes,
 
   finishedLanes: Lanes,
 
   entangledLanes: Lanes,
   entanglements: LaneMap<Lanes>,
+
+  pooledCache: Cache | null,
+  pooledCacheLanes: Lanes,
 |};
 
 // The following attributes are only used by interaction tracing builds.
@@ -258,20 +276,15 @@ type BasicStateAction<S> = (S => S) | S;
 type Dispatch<A> = A => void;
 
 export type Dispatcher = {|
-  readContext<T>(
-    context: ReactContext<T>,
-    observedBits: void | number | boolean,
-  ): T,
+  getCacheForType?: <T>(resourceType: () => T) => T,
+  readContext<T>(context: ReactContext<T>): T,
   useState<S>(initialState: (() => S) | S): [S, Dispatch<BasicStateAction<S>>],
   useReducer<S, I, A>(
     reducer: (S, A) => S,
     initialArg: I,
     init?: (I) => S,
   ): [S, Dispatch<A>],
-  useContext<T>(
-    context: ReactContext<T>,
-    observedBits: void | number | boolean,
-  ): T,
+  useContext<T>(context: ReactContext<T>): T,
   useRef<T>(initialValue: T): {|current: T|},
   useEffect(
     create: () => (() => void) | void,
@@ -297,6 +310,7 @@ export type Dispatcher = {|
     subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
   ): Snapshot,
   useOpaqueIdentifier(): any,
+  useCacheRefresh?: () => <T>(?() => T, ?T) => void,
 
   unstable_isNewReconciler?: boolean,
 |};
