@@ -10,14 +10,15 @@
 import type {AnyNativeEvent} from './legacy-events/PluginModuleType';
 import type {TopLevelType} from './legacy-events/TopLevelEventTypes';
 import SyntheticEvent from './legacy-events/SyntheticEvent';
-import invariant from 'shared/invariant';
+import type {PropagationPhases} from './legacy-events/PropagationPhases';
 
 // Module provided by RN:
 import {ReactNativeViewConfigRegistry} from 'react-native/Libraries/ReactPrivate/ReactNativePrivateInterface';
 import accumulateInto from './legacy-events/accumulateInto';
-import getListener from './ReactNativeGetListener';
+import getListeners from './ReactNativeGetListeners';
 import forEachAccumulated from './legacy-events/forEachAccumulated';
 import {HostComponent} from 'react-reconciler/src/ReactWorkTags';
+import isArray from 'shared/isArray';
 
 const {
   customBubblingEventTypes,
@@ -27,10 +28,37 @@ const {
 // Start of inline: the below functions were inlined from
 // EventPropagator.js, as they deviated from ReactDOM's newer
 // implementations.
-function listenerAtPhase(inst, event, propagationPhase: PropagationPhases) {
+function listenersAtPhase(inst, event, propagationPhase: PropagationPhases) {
   const registrationName =
     event.dispatchConfig.phasedRegistrationNames[propagationPhase];
-  return getListener(inst, registrationName);
+  return getListeners(inst, registrationName, propagationPhase, true);
+}
+
+function accumulateListenersAndInstances(inst, event, listeners) {
+  const listenersLength = listeners
+    ? isArray(listeners)
+      ? listeners.length
+      : 1
+    : 0;
+  if (listenersLength > 0) {
+    event._dispatchListeners = accumulateInto(
+      event._dispatchListeners,
+      listeners,
+    );
+
+    // Avoid allocating additional arrays here
+    if (event._dispatchInstances == null && listenersLength === 1) {
+      event._dispatchInstances = inst;
+    } else {
+      event._dispatchInstances = event._dispatchInstances || [];
+      if (!isArray(event._dispatchInstances)) {
+        event._dispatchInstances = [event._dispatchInstances];
+      }
+      for (let i = 0; i < listenersLength; i++) {
+        event._dispatchInstances.push(inst);
+      }
+    }
+  }
 }
 
 function accumulateDirectionalDispatches(inst, phase, event) {
@@ -39,14 +67,8 @@ function accumulateDirectionalDispatches(inst, phase, event) {
       console.error('Dispatching inst must not be null');
     }
   }
-  const listener = listenerAtPhase(inst, event, phase);
-  if (listener) {
-    event._dispatchListeners = accumulateInto(
-      event._dispatchListeners,
-      listener,
-    );
-    event._dispatchInstances = accumulateInto(event._dispatchInstances, inst);
-  }
+  const listeners = listenersAtPhase(inst, event, phase);
+  accumulateListenersAndInstances(inst, event, listeners);
 }
 
 function getParent(inst) {
@@ -104,14 +126,8 @@ function accumulateDispatches(
 ): void {
   if (inst && event && event.dispatchConfig.registrationName) {
     const registrationName = event.dispatchConfig.registrationName;
-    const listener = getListener(inst, registrationName);
-    if (listener) {
-      event._dispatchListeners = accumulateInto(
-        event._dispatchListeners,
-        listener,
-      );
-      event._dispatchInstances = accumulateInto(event._dispatchInstances, inst);
-    }
+    const listeners = getListeners(inst, registrationName, 'bubbled', false);
+    accumulateListenersAndInstances(inst, event, listeners);
   }
 }
 
@@ -131,7 +147,6 @@ function accumulateDirectDispatches(events: ?(Array<Object> | Object)) {
 }
 
 // End of inline
-type PropagationPhases = 'bubbled' | 'captured';
 
 const ReactNativeBridgeEventPlugin = {
   eventTypes: {},
@@ -148,11 +163,14 @@ const ReactNativeBridgeEventPlugin = {
     }
     const bubbleDispatchConfig = customBubblingEventTypes[topLevelType];
     const directDispatchConfig = customDirectEventTypes[topLevelType];
-    invariant(
-      bubbleDispatchConfig || directDispatchConfig,
-      'Unsupported top level event type "%s" dispatched',
-      topLevelType,
-    );
+
+    if (!bubbleDispatchConfig && !directDispatchConfig) {
+      throw new Error(
+        // $FlowFixMe - Flow doesn't like this string coercion because DOMTopLevelEventType is opaque
+        `Unsupported top level event type "${topLevelType}" dispatched`,
+      );
+    }
+
     const event = SyntheticEvent.getPooled(
       bubbleDispatchConfig || directDispatchConfig,
       targetInst,

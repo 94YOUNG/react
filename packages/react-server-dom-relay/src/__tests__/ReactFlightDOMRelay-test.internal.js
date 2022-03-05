@@ -9,21 +9,25 @@
 
 let act;
 let React;
-let ReactDOM;
+let ReactDOMClient;
 let JSResourceReference;
 let ReactDOMFlightRelayServer;
 let ReactDOMFlightRelayClient;
+let SuspenseList;
 
 describe('ReactFlightDOMRelay', () => {
   beforeEach(() => {
     jest.resetModules();
 
-    act = require('react-dom/test-utils').unstable_concurrentAct;
+    act = require('jest-react').act;
     React = require('react');
-    ReactDOM = require('react-dom');
+    ReactDOMClient = require('react-dom/client');
     ReactDOMFlightRelayServer = require('react-server-dom-relay/server');
     ReactDOMFlightRelayClient = require('react-server-dom-relay');
     JSResourceReference = require('JSResourceReference');
+    if (gate(flags => flags.enableSuspenseList)) {
+      SuspenseList = React.SuspenseList;
+    }
   });
 
   function readThrough(data) {
@@ -72,7 +76,6 @@ describe('ReactFlightDOMRelay', () => {
     });
   });
 
-  // @gate experimental
   it('can render a client component using a module reference and render there', () => {
     function UserClient(props) {
       return (
@@ -97,7 +100,7 @@ describe('ReactFlightDOMRelay', () => {
     const modelClient = readThrough(transport);
 
     const container = document.createElement('div');
-    const root = ReactDOM.createRoot(container);
+    const root = ReactDOMClient.createRoot(container);
     act(() => {
       root.render(modelClient.greeting);
     });
@@ -105,17 +108,9 @@ describe('ReactFlightDOMRelay', () => {
     expect(container.innerHTML).toEqual('<span>Hello, Seb Smith</span>');
   });
 
-  // @gate experimental
+  // @gate enableSuspenseList
   it('can reasonably handle different element types', () => {
-    const {
-      forwardRef,
-      memo,
-      Fragment,
-      StrictMode,
-      Profiler,
-      Suspense,
-      SuspenseList,
-    } = React;
+    const {forwardRef, memo, Fragment, StrictMode, Profiler, Suspense} = React;
 
     const Inner = memo(
       forwardRef((props, ref) => {

@@ -14,7 +14,6 @@ import type {
   IntersectionObserverOptions,
   ObserveVisibleRectsCallback,
 } from 'react-reconciler/src/ReactTestSelectors';
-import type {RootType} from './ReactDOMRoot';
 import type {ReactScopeInstance} from 'shared/ReactTypes';
 
 import {
@@ -36,7 +35,7 @@ import {
   diffHydratedProperties,
   diffHydratedText,
   trapClickOnNonInteractiveElement,
-  warnForUnmatchedText,
+  checkForUnmatchedText,
   warnForDeletedHydratableElement,
   warnForDeletedHydratableText,
   warnForInsertedHydratedElement,
@@ -60,7 +59,6 @@ import {
 } from '../shared/HTMLNodeType';
 import dangerousStyleValue from '../shared/dangerousStyleValue';
 
-import {REACT_OPAQUE_ID_TYPE} from 'shared/ReactSymbols';
 import {retryIfBlockedOn} from '../events/ReactDOMEventReplaying';
 
 import {
@@ -72,6 +70,9 @@ import {HostComponent, HostText} from 'react-reconciler/src/ReactWorkTags';
 import {listenToAllSupportedEvents} from '../events/DOMPluginEventSystem';
 
 import {DefaultEventPriority} from 'react-reconciler/src/ReactEventPriorities';
+
+// TODO: Remove this deep import when we delete the legacy root API
+import {ConcurrentMode, NoMode} from 'react-reconciler/src/ReactTypeOfMode';
 
 export type Type = string;
 export type Props = {
@@ -105,8 +106,8 @@ export type EventTargetChildElement = {
   ...
 };
 export type Container =
-  | (Element & {_reactRootContainer?: RootType, ...})
-  | (Document & {_reactRootContainer?: RootType, ...});
+  | (Element & {_reactRootContainer?: FiberRoot, ...})
+  | (Document & {_reactRootContainer?: FiberRoot, ...});
 export type Instance = Element;
 export type TextInstance = Text;
 export type SuspenseInstance = Comment & {_reactRetry?: () => void, ...};
@@ -124,13 +125,6 @@ export type ChildSet = void; // Unused
 export type TimeoutHandle = TimeoutID;
 export type NoTimeout = -1;
 export type RendererInspectionConfig = $ReadOnly<{||}>;
-
-export opaque type OpaqueIDType =
-  | string
-  | {
-      toString: () => string | void,
-      valueOf: () => string | void,
-    };
 
 type SelectionInformation = {|
   focusedElem: null | HTMLElement,
@@ -151,17 +145,6 @@ const STYLE = 'style';
 
 let eventsEnabled: ?boolean = null;
 let selectionInformation: null | SelectionInformation = null;
-
-function shouldAutoFocusHostComponent(type: string, props: Props): boolean {
-  switch (type) {
-    case 'button':
-    case 'input':
-    case 'select':
-    case 'textarea':
-      return !!props.autoFocus;
-  }
-  return false;
-}
 
 export * from 'react-reconciler/src/ReactFiberHostConfigWithNoPersistence';
 
@@ -313,7 +296,17 @@ export function finalizeInitialChildren(
   hostContext: HostContext,
 ): boolean {
   setInitialProperties(domElement, type, props, rootContainerInstance);
-  return shouldAutoFocusHostComponent(type, props);
+  switch (type) {
+    case 'button':
+    case 'input':
+    case 'select':
+    case 'textarea':
+      return !!props.autoFocus;
+    case 'img':
+      return true;
+    default:
+      return false;
+  }
 }
 
 export function prepareUpdate(
@@ -351,7 +344,6 @@ export function prepareUpdate(
 export function shouldSetTextContent(type: string, props: Props): boolean {
   return (
     type === 'textarea' ||
-    type === 'option' ||
     type === 'noscript' ||
     typeof props.children === 'string' ||
     typeof props.children === 'number' ||
@@ -394,6 +386,7 @@ export const scheduleTimeout: any =
 export const cancelTimeout: any =
   typeof clearTimeout === 'function' ? clearTimeout : (undefined: any);
 export const noTimeout = -1;
+const localPromise = typeof Promise === 'function' ? Promise : undefined;
 
 // -------------------
 //     Microtasks
@@ -402,9 +395,10 @@ export const supportsMicrotasks = true;
 export const scheduleMicrotask: any =
   typeof queueMicrotask === 'function'
     ? queueMicrotask
-    : typeof Promise !== 'undefined'
+    : typeof localPromise !== 'undefined'
     ? callback =>
-        Promise.resolve(null)
+        localPromise
+          .resolve(null)
           .then(callback)
           .catch(handleErrorInNextTick)
     : scheduleTimeout; // TODO: Determine the best fallback here.
@@ -433,12 +427,25 @@ export function commitMount(
   // does to implement the `autoFocus` attribute on the client). But
   // there are also other cases when this might happen (such as patching
   // up text content during hydration mismatch). So we'll check this again.
-  if (shouldAutoFocusHostComponent(type, newProps)) {
-    ((domElement: any):
-      | HTMLButtonElement
-      | HTMLInputElement
-      | HTMLSelectElement
-      | HTMLTextAreaElement).focus();
+  switch (type) {
+    case 'button':
+    case 'input':
+    case 'select':
+    case 'textarea':
+      if (newProps.autoFocus) {
+        ((domElement: any):
+          | HTMLButtonElement
+          | HTMLInputElement
+          | HTMLSelectElement
+          | HTMLTextAreaElement).focus();
+      }
+      return;
+    case 'img': {
+      if ((newProps: any).src) {
+        ((domElement: any): HTMLImageElement).src = (newProps: any).src;
+      }
+      return;
+    }
   }
 }
 
@@ -450,11 +457,11 @@ export function commitUpdate(
   newProps: Props,
   internalInstanceHandle: Object,
 ): void {
+  // Apply the diff to the DOM node.
+  updateProperties(domElement, updatePayload, type, oldProps, newProps);
   // Update the props handle so that we know which props are the ones with
   // with current event handlers.
   updateFiberProps(domElement, newProps);
-  // Apply the diff to the DOM node.
-  updateProperties(domElement, updatePayload, type, oldProps, newProps);
 }
 
 export function resetTextContent(domElement: Instance): void {
@@ -751,6 +758,9 @@ function getNextHydratable(node) {
         ) {
           break;
         }
+        if (nodeData === SUSPENSE_END_DATA) {
+          return null;
+        }
       }
     }
   }
@@ -764,9 +774,21 @@ export function getNextHydratableSibling(
 }
 
 export function getFirstHydratableChild(
-  parentInstance: Container | Instance,
+  parentInstance: Instance,
 ): null | HydratableInstance {
   return getNextHydratable(parentInstance.firstChild);
+}
+
+export function getFirstHydratableChildWithinContainer(
+  parentContainer: Container,
+): null | HydratableInstance {
+  return getNextHydratable(parentContainer.firstChild);
+}
+
+export function getFirstHydratableChildWithinSuspenseInstance(
+  parentInstance: SuspenseInstance,
+): null | HydratableInstance {
+  return getNextHydratable(parentInstance.nextSibling);
 }
 
 export function hydrateInstance(
@@ -776,6 +798,7 @@ export function hydrateInstance(
   rootContainerInstance: Container,
   hostContext: HostContext,
   internalInstanceHandle: Object,
+  shouldWarnDev: boolean,
 ): null | Array<mixed> {
   precacheFiberNode(internalInstanceHandle, instance);
   // TODO: Possibly defer this until the commit phase where all the events
@@ -788,12 +811,20 @@ export function hydrateInstance(
   } else {
     parentNamespace = ((hostContext: any): HostContextProd);
   }
+
+  // TODO: Temporary hack to check if we're in a concurrent root. We can delete
+  // when the legacy root API is removed.
+  const isConcurrentMode =
+    ((internalInstanceHandle: Fiber).mode & ConcurrentMode) !== NoMode;
+
   return diffHydratedProperties(
     instance,
     type,
     props,
     parentNamespace,
     rootContainerInstance,
+    isConcurrentMode,
+    shouldWarnDev,
   );
 }
 
@@ -801,9 +832,16 @@ export function hydrateTextInstance(
   textInstance: TextInstance,
   text: string,
   internalInstanceHandle: Object,
+  shouldWarnDev: boolean,
 ): boolean {
   precacheFiberNode(internalInstanceHandle, textInstance);
-  return diffHydratedText(textInstance, text);
+
+  // TODO: Temporary hack to check if we're in a concurrent root. We can delete
+  // when the legacy root API is removed.
+  const isConcurrentMode =
+    ((internalInstanceHandle: Fiber).mode & ConcurrentMode) !== NoMode;
+
+  return diffHydratedText(textInstance, text, isConcurrentMode);
 }
 
 export function hydrateSuspenseInstance(
@@ -892,17 +930,22 @@ export function commitHydratedSuspenseInstance(
 export function shouldDeleteUnhydratedTailInstances(
   parentType: string,
 ): boolean {
-  return parentType !== 'head' || parentType !== 'body';
+  return parentType !== 'head' && parentType !== 'body';
 }
 
 export function didNotMatchHydratedContainerTextInstance(
   parentContainer: Container,
   textInstance: TextInstance,
   text: string,
+  isConcurrentMode: boolean,
 ) {
-  if (__DEV__) {
-    warnForUnmatchedText(textInstance, text);
-  }
+  const shouldWarnDev = true;
+  checkForUnmatchedText(
+    textInstance.nodeValue,
+    text,
+    isConcurrentMode,
+    shouldWarnDev,
+  );
 }
 
 export function didNotMatchHydratedTextInstance(
@@ -911,13 +954,20 @@ export function didNotMatchHydratedTextInstance(
   parentInstance: Instance,
   textInstance: TextInstance,
   text: string,
+  isConcurrentMode: boolean,
 ) {
-  if (__DEV__ && parentProps[SUPPRESS_HYDRATION_WARNING] !== true) {
-    warnForUnmatchedText(textInstance, text);
+  if (parentProps[SUPPRESS_HYDRATION_WARNING] !== true) {
+    const shouldWarnDev = true;
+    checkForUnmatchedText(
+      textInstance.nodeValue,
+      text,
+      isConcurrentMode,
+      shouldWarnDev,
+    );
   }
 }
 
-export function didNotHydrateContainerInstance(
+export function didNotHydrateInstanceWithinContainer(
   parentContainer: Container,
   instance: HydratableInstance,
 ) {
@@ -928,6 +978,25 @@ export function didNotHydrateContainerInstance(
       // TODO: warnForDeletedHydratableSuspenseBoundary
     } else {
       warnForDeletedHydratableText(parentContainer, (instance: any));
+    }
+  }
+}
+
+export function didNotHydrateInstanceWithinSuspenseInstance(
+  parentInstance: SuspenseInstance,
+  instance: HydratableInstance,
+) {
+  if (__DEV__) {
+    // $FlowFixMe: Only Element or Document can be parent nodes.
+    const parentNode: Element | Document | null = parentInstance.parentNode;
+    if (parentNode !== null) {
+      if (instance.nodeType === ELEMENT_NODE) {
+        warnForDeletedHydratableElement(parentNode, (instance: any));
+      } else if (instance.nodeType === COMMENT_NODE) {
+        // TODO: warnForDeletedHydratableSuspenseBoundary
+      } else {
+        warnForDeletedHydratableText(parentNode, (instance: any));
+      }
     }
   }
 }
@@ -949,7 +1018,7 @@ export function didNotHydrateInstance(
   }
 }
 
-export function didNotFindHydratableContainerInstance(
+export function didNotFindHydratableInstanceWithinContainer(
   parentContainer: Container,
   type: string,
   props: Props,
@@ -959,7 +1028,7 @@ export function didNotFindHydratableContainerInstance(
   }
 }
 
-export function didNotFindHydratableContainerTextInstance(
+export function didNotFindHydratableTextInstanceWithinContainer(
   parentContainer: Container,
   text: string,
 ) {
@@ -968,11 +1037,44 @@ export function didNotFindHydratableContainerTextInstance(
   }
 }
 
-export function didNotFindHydratableContainerSuspenseInstance(
+export function didNotFindHydratableSuspenseInstanceWithinContainer(
   parentContainer: Container,
 ) {
   if (__DEV__) {
     // TODO: warnForInsertedHydratedSuspense(parentContainer);
+  }
+}
+
+export function didNotFindHydratableInstanceWithinSuspenseInstance(
+  parentInstance: SuspenseInstance,
+  type: string,
+  props: Props,
+) {
+  if (__DEV__) {
+    // $FlowFixMe: Only Element or Document can be parent nodes.
+    const parentNode: Element | Document | null = parentInstance.parentNode;
+    if (parentNode !== null)
+      warnForInsertedHydratedElement(parentNode, type, props);
+  }
+}
+
+export function didNotFindHydratableTextInstanceWithinSuspenseInstance(
+  parentInstance: SuspenseInstance,
+  text: string,
+) {
+  if (__DEV__) {
+    // $FlowFixMe: Only Element or Document can be parent nodes.
+    const parentNode: Element | Document | null = parentInstance.parentNode;
+    if (parentNode !== null) warnForInsertedHydratedText(parentNode, text);
+  }
+}
+
+export function didNotFindHydratableSuspenseInstanceWithinSuspenseInstance(
+  parentInstance: SuspenseInstance,
+) {
+  if (__DEV__) {
+    // const parentNode: Element | Document | null = parentInstance.parentNode;
+    // TODO: warnForInsertedHydratedSuspense(parentNode);
   }
 }
 
@@ -1011,6 +1113,8 @@ export function didNotFindHydratableSuspenseInstance(
 
 export function errorHydratingContainer(parentContainer: Container): void {
   if (__DEV__) {
+    // TODO: This gets logged by onRecoverableError, too, so we should be
+    // able to remove it.
     console.error(
       'An error occurred during hydration. The server HTML was replaced with client content in <%s>.',
       parentContainer.nodeName.toLowerCase(),
@@ -1020,43 +1124,6 @@ export function errorHydratingContainer(parentContainer: Container): void {
 
 export function getInstanceFromNode(node: HTMLElement): null | Object {
   return getClosestInstanceFromNode(node) || null;
-}
-
-let clientId: number = 0;
-export function makeClientId(): OpaqueIDType {
-  return 'r:' + (clientId++).toString(36);
-}
-
-export function makeClientIdInDEV(warnOnAccessInDEV: () => void): OpaqueIDType {
-  const id = 'r:' + (clientId++).toString(36);
-  return {
-    toString() {
-      warnOnAccessInDEV();
-      return id;
-    },
-    valueOf() {
-      warnOnAccessInDEV();
-      return id;
-    },
-  };
-}
-
-export function isOpaqueHydratingObject(value: mixed): boolean {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    value.$$typeof === REACT_OPAQUE_ID_TYPE
-  );
-}
-
-export function makeOpaqueHydratingObject(
-  attemptToReadValue: () => void,
-): OpaqueIDType {
-  return {
-    $$typeof: REACT_OPAQUE_ID_TYPE,
-    toString: attemptToReadValue,
-    valueOf: attemptToReadValue,
-  };
 }
 
 export function preparePortalMount(portalInstance: Instance): void {

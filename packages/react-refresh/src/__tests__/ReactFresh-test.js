@@ -13,6 +13,7 @@
 
 let React;
 let ReactDOM;
+let ReactDOMClient;
 let ReactFreshRuntime;
 let Scheduler;
 let act;
@@ -28,8 +29,9 @@ describe('ReactFresh', () => {
       ReactFreshRuntime = require('react-refresh/runtime');
       ReactFreshRuntime.injectIntoGlobalHook(global);
       ReactDOM = require('react-dom');
+      ReactDOMClient = require('react-dom/client');
       Scheduler = require('scheduler');
-      act = require('react-dom/test-utils').unstable_concurrentAct;
+      act = require('jest-react').act;
       createReactClass = require('create-react-class/factory')(
         React.Component,
         React.isValidElement,
@@ -2437,7 +2439,7 @@ describe('ReactFresh', () => {
         };
       });
 
-      const root = ReactDOM.unstable_createRoot(container);
+      const root = ReactDOMClient.createRoot(container);
       root.render(<AppV1 offscreen={true} />);
       expect(Scheduler).toFlushAndYieldThrough(['App#layout']);
       const el = container.firstChild;
@@ -3782,7 +3784,7 @@ describe('ReactFresh', () => {
       React = require('react');
       ReactDOM = require('react-dom');
       Scheduler = require('scheduler');
-      act = require('react-dom/test-utils').unstable_concurrentAct;
+      act = require('jest-react').act;
 
       // Important! Inject into the global hook *after* ReactDOM runs:
       ReactFreshRuntime = require('react-refresh/runtime');
@@ -3844,6 +3846,10 @@ describe('ReactFresh', () => {
 
       // Redirect all React/ReactDOM requires to v16.8.0
       // This version predates Fast Refresh support.
+      jest.mock('scheduler', () => jest.requireActual('scheduler-0-13'));
+      jest.mock('scheduler/tracing', () =>
+        jest.requireActual('scheduler-0-13/tracing'),
+      );
       jest.mock('react', () => jest.requireActual('react-16-8'));
       jest.mock('react-dom', () => jest.requireActual('react-dom-16-8'));
 

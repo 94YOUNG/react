@@ -13,7 +13,7 @@ import type {LazyComponent} from 'react/src/ReactLazy';
 import type {ReactProvider, ReactContext} from 'shared/ReactTypes';
 
 import * as React from 'react';
-import invariant from 'shared/invariant';
+import isArray from 'shared/isArray';
 import getComponentNameFromType from 'shared/getComponentNameFromType';
 import {describeUnknownElementTypeFrameInDEV} from 'shared/ReactComponentStackFrame';
 import ReactSharedInternals from 'shared/ReactSharedInternals';
@@ -24,6 +24,10 @@ import {
   enableSuspenseServerRenderer,
   enableScopeAPI,
 } from 'shared/ReactFeatureFlags';
+import {
+  checkPropStringCoercion,
+  checkFormFieldValueStringCoercion,
+} from 'shared/CheckStringCoercion';
 
 import {
   REACT_DEBUG_TRACING_MODE_TYPE,
@@ -51,7 +55,6 @@ import {allocThreadID, freeThreadID} from './ReactThreadIDAllocator';
 import {
   createMarkupForCustomAttribute,
   createMarkupForProperty,
-  createMarkupForRoot,
 } from './DOMMarkupOperations';
 import escapeTextForBrowser from './escapeTextForBrowser';
 import {
@@ -77,11 +80,8 @@ import warnValidStyle from '../shared/warnValidStyle';
 import {validateProperties as validateARIAProperties} from '../shared/ReactDOMInvalidARIAHook';
 import {validateProperties as validateInputProperties} from '../shared/ReactDOMNullInputValuePropHook';
 import {validateProperties as validateUnknownProperties} from '../shared/ReactDOMUnknownPropertyHook';
+import assign from 'shared/assign';
 import hasOwnProperty from 'shared/hasOwnProperty';
-
-export type ServerOptions = {
-  identifierPrefix?: string,
-};
 
 // Based on reading the React.Children implementation. TODO: type this somewhere?
 type ReactNode = string | number | ReactElement;
@@ -187,12 +187,14 @@ let didWarnDefaultChecked = false;
 let didWarnDefaultSelectValue = false;
 let didWarnDefaultTextareaValue = false;
 let didWarnInvalidOptionChildren = false;
+let didWarnInvalidOptionInnerHTML = false;
 const didWarnAboutNoopUpdateForComponent = {};
 const didWarnAboutBadClass = {};
 const didWarnAboutModulePatternComponent = {};
 const didWarnAboutDeprecatedWillMount = {};
 const didWarnAboutUndefinedDerivedState = {};
 const didWarnAboutUninitializedState = {};
+const didWarnAboutLegacyLifecyclesAndDerivedState = {};
 const valuePropNames = ['value', 'defaultValue'];
 const newlineEatingTags = {
   listing: true,
@@ -207,7 +209,10 @@ const VALID_TAG_REGEX = /^[a-zA-Z][a-zA-Z:_\.\-\d]*$/; // Simplified subset
 const validatedTagCache = {};
 function validateDangerousTag(tag) {
   if (!validatedTagCache.hasOwnProperty(tag)) {
-    invariant(VALID_TAG_REGEX.test(tag), 'Invalid tag: %s', tag);
+    if (!VALID_TAG_REGEX.test(tag)) {
+      throw new Error(`Invalid tag: ${tag}`);
+    }
+
     validatedTagCache[tag] = true;
   }
 }
@@ -333,7 +338,8 @@ function flattenOptionChildren(children: mixed): ?string {
       ) {
         didWarnInvalidOptionChildren = true;
         console.error(
-          'Only strings and numbers are supported as <option> children.',
+          'Cannot infer the option value of complex children. ' +
+            'Pass a `value` prop or use a plain string as children to <option>.',
         );
       }
     }
@@ -385,28 +391,7 @@ function createOpenTagMarkup(
     }
   }
 
-  // For static pages, no need to put React ID and checksum. Saves lots of
-  // bytes.
-  if (makeStaticMarkup) {
-    return ret;
-  }
-
-  if (isRootElement) {
-    ret += ' ' + createMarkupForRoot();
-  }
   return ret;
-}
-
-function validateRenderResult(child, type) {
-  if (child === undefined) {
-    invariant(
-      false,
-      '%s(...): Nothing was returned from render. This usually means a ' +
-        'return statement is missing. Or, to render nothing, ' +
-        'return null.',
-      getComponentNameFromType(type) || 'Component',
-    );
-  }
 }
 
 function resolve(
@@ -482,6 +467,79 @@ function resolve(
               didWarnAboutUninitializedState[componentName] = true;
             }
           }
+
+          // If new component APIs are defined, "unsafe" lifecycles won't be called.
+          // Warn about these lifecycles if they are present.
+          // Don't warn about react-lifecycles-compat polyfilled methods though.
+          if (
+            typeof Component.getDerivedStateFromProps === 'function' ||
+            typeof inst.getSnapshotBeforeUpdate === 'function'
+          ) {
+            let foundWillMountName = null;
+            let foundWillReceivePropsName = null;
+            let foundWillUpdateName = null;
+            if (
+              typeof inst.componentWillMount === 'function' &&
+              inst.componentWillMount.__suppressDeprecationWarning !== true
+            ) {
+              foundWillMountName = 'componentWillMount';
+            } else if (typeof inst.UNSAFE_componentWillMount === 'function') {
+              foundWillMountName = 'UNSAFE_componentWillMount';
+            }
+            if (
+              typeof inst.componentWillReceiveProps === 'function' &&
+              inst.componentWillReceiveProps.__suppressDeprecationWarning !==
+                true
+            ) {
+              foundWillReceivePropsName = 'componentWillReceiveProps';
+            } else if (
+              typeof inst.UNSAFE_componentWillReceiveProps === 'function'
+            ) {
+              foundWillReceivePropsName = 'UNSAFE_componentWillReceiveProps';
+            }
+            if (
+              typeof inst.componentWillUpdate === 'function' &&
+              inst.componentWillUpdate.__suppressDeprecationWarning !== true
+            ) {
+              foundWillUpdateName = 'componentWillUpdate';
+            } else if (typeof inst.UNSAFE_componentWillUpdate === 'function') {
+              foundWillUpdateName = 'UNSAFE_componentWillUpdate';
+            }
+            if (
+              foundWillMountName !== null ||
+              foundWillReceivePropsName !== null ||
+              foundWillUpdateName !== null
+            ) {
+              const componentName =
+                getComponentNameFromType(Component) || 'Component';
+              const newApiName =
+                typeof Component.getDerivedStateFromProps === 'function'
+                  ? 'getDerivedStateFromProps()'
+                  : 'getSnapshotBeforeUpdate()';
+              if (!didWarnAboutLegacyLifecyclesAndDerivedState[componentName]) {
+                didWarnAboutLegacyLifecyclesAndDerivedState[
+                  componentName
+                ] = true;
+                console.error(
+                  'Unsafe legacy lifecycles will not be called for components using new component APIs.\n\n' +
+                    '%s uses %s but also contains the following legacy lifecycles:%s%s%s\n\n' +
+                    'The above lifecycles should be removed. Learn more about this warning here:\n' +
+                    'https://reactjs.org/link/unsafe-component-lifecycles',
+                  componentName,
+                  newApiName,
+                  foundWillMountName !== null
+                    ? `\n  ${foundWillMountName}`
+                    : '',
+                  foundWillReceivePropsName !== null
+                    ? `\n  ${foundWillReceivePropsName}`
+                    : '',
+                  foundWillUpdateName !== null
+                    ? `\n  ${foundWillUpdateName}`
+                    : '',
+                );
+              }
+            }
+          }
         }
 
         const partialState = Component.getDerivedStateFromProps.call(
@@ -506,7 +564,7 @@ function resolve(
         }
 
         if (partialState != null) {
-          inst.state = Object.assign({}, inst.state, partialState);
+          inst.state = assign({}, inst.state, partialState);
         }
       }
     } else {
@@ -564,7 +622,6 @@ function resolve(
         inst.render == null
       ) {
         child = inst;
-        validateRenderResult(child, Component);
         return;
       }
     }
@@ -582,32 +639,32 @@ function resolve(
       typeof inst.componentWillMount === 'function'
     ) {
       if (typeof inst.componentWillMount === 'function') {
-        if (__DEV__) {
-          if (
-            warnAboutDeprecatedLifecycles &&
-            inst.componentWillMount.__suppressDeprecationWarning !== true
-          ) {
-            const componentName =
-              getComponentNameFromType(Component) || 'Unknown';
-
-            if (!didWarnAboutDeprecatedWillMount[componentName]) {
-              console.warn(
-                // keep this warning in sync with ReactStrictModeWarning.js
-                'componentWillMount has been renamed, and is not recommended for use. ' +
-                  'See https://reactjs.org/link/unsafe-component-lifecycles for details.\n\n' +
-                  '* Move code from componentWillMount to componentDidMount (preferred in most cases) ' +
-                  'or the constructor.\n' +
-                  '\nPlease update the following components: %s',
-                componentName,
-              );
-              didWarnAboutDeprecatedWillMount[componentName] = true;
-            }
-          }
-        }
-
         // In order to support react-lifecycles-compat polyfilled components,
         // Unsafe lifecycles should not be invoked for any component with the new gDSFP.
         if (typeof Component.getDerivedStateFromProps !== 'function') {
+          if (__DEV__) {
+            if (
+              warnAboutDeprecatedLifecycles &&
+              inst.componentWillMount.__suppressDeprecationWarning !== true
+            ) {
+              const componentName =
+                getComponentNameFromType(Component) || 'Unknown';
+
+              if (!didWarnAboutDeprecatedWillMount[componentName]) {
+                console.warn(
+                  // keep this warning in sync with ReactStrictModeWarning.js
+                  'componentWillMount has been renamed, and is not recommended for use. ' +
+                    'See https://reactjs.org/link/unsafe-component-lifecycles for details.\n\n' +
+                    '* Move code from componentWillMount to componentDidMount (preferred in most cases) ' +
+                    'or the constructor.\n' +
+                    '\nPlease update the following components: %s',
+                  componentName,
+                );
+                didWarnAboutDeprecatedWillMount[componentName] = true;
+              }
+            }
+          }
+
           inst.componentWillMount();
         }
       }
@@ -639,9 +696,9 @@ function resolve(
             if (partialState != null) {
               if (dontMutate) {
                 dontMutate = false;
-                nextState = Object.assign({}, nextState, partialState);
+                nextState = assign({}, nextState, partialState);
               } else {
-                Object.assign(nextState, partialState);
+                assign(nextState, partialState);
               }
             }
           }
@@ -652,15 +709,6 @@ function resolve(
       }
     }
     child = inst.render();
-
-    if (__DEV__) {
-      if (child === undefined && inst.render._isMockFunction) {
-        // This is probably bad practice. Consider warning here and
-        // deprecating this convenience.
-        child = null;
-      }
-    }
-    validateRenderResult(child, Component);
 
     let childContext;
     if (disableLegacyContext) {
@@ -680,12 +728,12 @@ function resolve(
         if (typeof childContextTypes === 'object') {
           childContext = inst.getChildContext();
           for (const contextKey in childContext) {
-            invariant(
-              contextKey in childContextTypes,
-              '%s.getChildContext(): key "%s" is not defined in childContextTypes.',
-              getComponentNameFromType(Component) || 'Unknown',
-              contextKey,
-            );
+            if (!(contextKey in childContextTypes)) {
+              throw new Error(
+                `${getComponentNameFromType(Component) ||
+                  'Unknown'}.getChildContext(): key "${contextKey}" is not defined in childContextTypes.`,
+              );
+            }
           }
         } else {
           if (__DEV__) {
@@ -698,7 +746,7 @@ function resolve(
         }
       }
       if (childContext) {
-        context = Object.assign({}, context, childContext);
+        context = assign({}, context, childContext);
       }
     }
   }
@@ -733,14 +781,7 @@ class ReactDOMServerRenderer {
   contextValueStack: Array<any>;
   contextProviderStack: ?Array<ReactProvider<any>>; // DEV-only
 
-  uniqueID: number;
-  identifierPrefix: string;
-
-  constructor(
-    children: mixed,
-    makeStaticMarkup: boolean,
-    options?: ServerOptions,
-  ) {
+  constructor(children: mixed, makeStaticMarkup: boolean) {
     const flatChildren = flattenTopLevelChildren(children);
 
     const topFrame: Frame = {
@@ -768,10 +809,6 @@ class ReactDOMServerRenderer {
     this.contextIndex = -1;
     this.contextStack = [];
     this.contextValueStack = [];
-
-    // useOpaqueIdentifier ID
-    this.uniqueID = 0;
-    this.identifierPrefix = (options && options.identifierPrefix) || '';
 
     if (__DEV__) {
       this.contextProviderStack = [];
@@ -895,11 +932,14 @@ class ReactDOMServerRenderer {
               suspended = false;
               // If rendering was suspended at this boundary, render the fallbackFrame
               const fallbackFrame = frame.fallbackFrame;
-              invariant(
-                fallbackFrame,
-                'ReactDOMServer did not find an internal fallback frame for Suspense. ' +
-                  'This is a bug in React. Please file an issue.',
-              );
+
+              if (!fallbackFrame) {
+                throw new Error(
+                  'ReactDOMServer did not find an internal fallback frame for Suspense. ' +
+                    'This is a bug in React. Please file an issue.',
+                );
+              }
+
               this.stack.push(fallbackFrame);
               out[this.suspenseDepth] += '<!--$!-->';
               // Skip flushing output since we're switching to the fallback
@@ -926,17 +966,19 @@ class ReactDOMServerRenderer {
         } catch (err) {
           if (err != null && typeof err.then === 'function') {
             if (enableSuspenseServerRenderer) {
-              invariant(
-                this.suspenseDepth > 0,
-                // TODO: include component name. This is a bit tricky with current factoring.
-                'A React component suspended while rendering, but no fallback UI was specified.\n' +
-                  '\n' +
-                  'Add a <Suspense fallback=...> component higher in the tree to ' +
-                  'provide a loading indicator or placeholder to display.',
-              );
+              if (this.suspenseDepth <= 0) {
+                throw new Error(
+                  // TODO: include component name. This is a bit tricky with current factoring.
+                  'A React component suspended while rendering, but no fallback UI was specified.\n' +
+                    '\n' +
+                    'Add a <Suspense fallback=...> component higher in the tree to ' +
+                    'provide a loading indicator or placeholder to display.',
+                );
+              }
+
               suspended = true;
             } else {
-              invariant(false, 'ReactDOMServer does not yet support Suspense.');
+              throw new Error('ReactDOMServer does not yet support Suspense.');
             }
           } else {
             throw err;
@@ -986,17 +1028,18 @@ class ReactDOMServerRenderer {
         if (nextChild != null && nextChild.$$typeof != null) {
           // Catch unexpected special types early.
           const $$typeof = nextChild.$$typeof;
-          invariant(
-            $$typeof !== REACT_PORTAL_TYPE,
-            'Portals are not currently supported by the server renderer. ' +
-              'Render them conditionally so that they only appear on the client render.',
-          );
+
+          if ($$typeof === REACT_PORTAL_TYPE) {
+            throw new Error(
+              'Portals are not currently supported by the server renderer. ' +
+                'Render them conditionally so that they only appear on the client render.',
+            );
+          }
+
           // Catch-all to prevent an infinite loop if React.Children.toArray() supports some new type.
-          invariant(
-            false,
-            'Unknown element-like object type: %s. This is likely a bug in React. ' +
+          throw new Error(
+            `Unknown element-like object type: ${($$typeof: any).toString()}. This is likely a bug in React. ` +
               'Please file an issue.',
-            ($$typeof: any).toString(),
           );
         }
         const nextChildren = toArray(nextChild);
@@ -1056,25 +1099,6 @@ class ReactDOMServerRenderer {
         case REACT_SUSPENSE_TYPE: {
           if (enableSuspenseServerRenderer) {
             const fallback = ((nextChild: any): ReactElement).props.fallback;
-            if (fallback === undefined) {
-              // If there is no fallback, then this just behaves as a fragment.
-              const nextChildren = toArray(
-                ((nextChild: any): ReactElement).props.children,
-              );
-              const frame: Frame = {
-                type: null,
-                domNamespace: parentNamespace,
-                children: nextChildren,
-                childIndex: 0,
-                context: context,
-                footer: '',
-              };
-              if (__DEV__) {
-                ((frame: any): FrameDev).debugElementStack = [];
-              }
-              this.stack.push(frame);
-              return '';
-            }
             const fallbackChildren = toArray(fallback);
             const nextChildren = toArray(
               ((nextChild: any): ReactElement).props.children,
@@ -1104,7 +1128,7 @@ class ReactDOMServerRenderer {
             this.suspenseDepth++;
             return '<!--$-->';
           } else {
-            invariant(false, 'ReactDOMServer does not yet support Suspense.');
+            throw new Error('ReactDOMServer does not yet support Suspense.');
           }
         }
         // eslint-disable-next-line-no-fallthrough
@@ -1127,8 +1151,7 @@ class ReactDOMServerRenderer {
             this.stack.push(frame);
             return '';
           }
-          invariant(
-            false,
+          throw new Error(
             'ReactDOMServer does not yet support scope components.',
           );
         }
@@ -1170,7 +1193,7 @@ class ReactDOMServerRenderer {
             const nextChildren = [
               React.createElement(
                 elementType.type,
-                Object.assign({ref: element.ref}, element.props),
+                assign({ref: element.ref}, element.props),
               ),
             ];
             const frame: Frame = {
@@ -1269,7 +1292,7 @@ class ReactDOMServerRenderer {
             const nextChildren = [
               React.createElement(
                 result,
-                Object.assign({ref: element.ref}, element.props),
+                assign({ref: element.ref}, element.props),
               ),
             ];
             const frame: Frame = {
@@ -1308,13 +1331,13 @@ class ReactDOMServerRenderer {
           info += '\n\nCheck the render method of `' + ownerName + '`.';
         }
       }
-      invariant(
-        false,
+
+      throw new Error(
         'Element type is invalid: expected a string (for built-in ' +
           'components) or a class/function (for composite components) ' +
-          'but got: %s.%s',
-        elementType == null ? elementType : typeof elementType,
-        info,
+          `but got: ${
+            elementType == null ? elementType : typeof elementType
+          }.${info}`,
       );
     }
   }
@@ -1391,7 +1414,7 @@ class ReactDOMServerRenderer {
         }
       }
 
-      props = Object.assign(
+      props = assign(
         {
           type: undefined,
         },
@@ -1434,18 +1457,24 @@ class ReactDOMServerRenderer {
                 'children on <textarea>.',
             );
           }
-          invariant(
-            defaultValue == null,
-            'If you supply `defaultValue` on a <textarea>, do not pass children.',
-          );
-          if (Array.isArray(textareaChildren)) {
-            invariant(
-              textareaChildren.length <= 1,
-              '<textarea> can only have at most one child.',
+
+          if (defaultValue != null) {
+            throw new Error(
+              'If you supply `defaultValue` on a <textarea>, do not pass children.',
             );
+          }
+
+          if (isArray(textareaChildren)) {
+            if (textareaChildren.length > 1) {
+              throw new Error('<textarea> can only have at most one child.');
+            }
+
             textareaChildren = textareaChildren[0];
           }
 
+          if (__DEV__) {
+            checkPropStringCoercion(textareaChildren, 'children');
+          }
           defaultValue = '' + textareaChildren;
         }
         if (defaultValue == null) {
@@ -1454,7 +1483,10 @@ class ReactDOMServerRenderer {
         initialValue = defaultValue;
       }
 
-      props = Object.assign({}, props, {
+      if (__DEV__) {
+        checkFormFieldValueStringCoercion(initialValue);
+      }
+      props = assign({}, props, {
         value: undefined,
         children: '' + initialValue,
       });
@@ -1467,14 +1499,14 @@ class ReactDOMServerRenderer {
           if (props[propName] == null) {
             continue;
           }
-          const isArray = Array.isArray(props[propName]);
-          if (props.multiple && !isArray) {
+          const propNameIsArray = isArray(props[propName]);
+          if (props.multiple && !propNameIsArray) {
             console.error(
               'The `%s` prop supplied to <select> must be an array if ' +
                 '`multiple` is true.',
               propName,
             );
-          } else if (!props.multiple && isArray) {
+          } else if (!props.multiple && propNameIsArray) {
             console.error(
               'The `%s` prop supplied to <select> must be a scalar ' +
                 'value if `multiple` is false.',
@@ -1500,42 +1532,59 @@ class ReactDOMServerRenderer {
       }
       this.currentSelectValue =
         props.value != null ? props.value : props.defaultValue;
-      props = Object.assign({}, props, {
+      props = assign({}, props, {
         value: undefined,
       });
     } else if (tag === 'option') {
       let selected = null;
       const selectValue = this.currentSelectValue;
-      const optionChildren = flattenOptionChildren(props.children);
       if (selectValue != null) {
         let value;
         if (props.value != null) {
+          if (__DEV__) {
+            checkFormFieldValueStringCoercion(props.value);
+          }
           value = props.value + '';
         } else {
-          value = optionChildren;
+          if (__DEV__) {
+            if (props.dangerouslySetInnerHTML != null) {
+              if (!didWarnInvalidOptionInnerHTML) {
+                didWarnInvalidOptionInnerHTML = true;
+                console.error(
+                  'Pass a `value` prop if you set dangerouslyInnerHTML so React knows ' +
+                    'which value should be selected.',
+                );
+              }
+            }
+          }
+          value = flattenOptionChildren(props.children);
         }
         selected = false;
-        if (Array.isArray(selectValue)) {
+        if (isArray(selectValue)) {
           // multiple
           for (let j = 0; j < selectValue.length; j++) {
+            if (__DEV__) {
+              checkFormFieldValueStringCoercion(selectValue[j]);
+            }
             if ('' + selectValue[j] === value) {
               selected = true;
               break;
             }
           }
         } else {
+          if (__DEV__) {
+            checkFormFieldValueStringCoercion(selectValue);
+          }
           selected = '' + selectValue === value;
         }
 
-        props = Object.assign(
+        props = assign(
           {
             selected: undefined,
-            children: undefined,
           },
           props,
           {
             selected: selected,
-            children: optionChildren,
           },
         );
       }

@@ -53,33 +53,43 @@ type Destination = {
 
 const POP = Buffer.from('/', 'utf8');
 
+function write(destination: Destination, buffer: Uint8Array): void {
+  const stack = destination.stack;
+  if (buffer === POP) {
+    stack.pop();
+    return;
+  }
+  // We assume one chunk is one instance.
+  const instance = JSON.parse(Buffer.from((buffer: any)).toString('utf8'));
+  if (stack.length === 0) {
+    destination.root = instance;
+  } else {
+    const parent = stack[stack.length - 1];
+    parent.children.push(instance);
+  }
+  stack.push(instance);
+}
+
 const ReactNoopServer = ReactFizzServer({
   scheduleWork(callback: () => void) {
     callback();
   },
   beginWriting(destination: Destination): void {},
   writeChunk(destination: Destination, buffer: Uint8Array): void {
-    const stack = destination.stack;
-    if (buffer === POP) {
-      stack.pop();
-      return;
-    }
-    // We assume one chunk is one instance.
-    const instance = JSON.parse(Buffer.from((buffer: any)).toString('utf8'));
-    if (stack.length === 0) {
-      destination.root = instance;
-    } else {
-      const parent = stack[stack.length - 1];
-      parent.children.push(instance);
-    }
-    stack.push(instance);
+    write(destination, buffer);
+  },
+  writeChunkAndReturn(destination: Destination, buffer: Uint8Array): boolean {
+    write(destination, buffer);
+    return true;
   },
   completeWriting(destination: Destination): void {},
   close(destination: Destination): void {},
   closeWithError(destination: Destination, error: mixed): void {},
   flushBuffered(destination: Destination): void {},
 
-  createSuspenseBoundaryID(): SuspenseInstance {
+  UNINITIALIZED_SUSPENSE_BOUNDARY_ID: null,
+
+  assignSuspenseBoundaryID(): SuspenseInstance {
     // The ID is a pointer to the boundary itself.
     return {state: 'pending', children: []};
   },
@@ -118,6 +128,13 @@ const ReactNoopServer = ReactFizzServer({
     target.push(POP);
   },
 
+  writeCompletedRoot(
+    destination: Destination,
+    responseState: ResponseState,
+  ): boolean {
+    return true;
+  },
+
   writePlaceholder(
     destination: Destination,
     responseState: ResponseState,
@@ -132,6 +149,7 @@ const ReactNoopServer = ReactFizzServer({
 
   writeStartCompletedSuspenseBoundary(
     destination: Destination,
+    responseState: ResponseState,
     suspenseInstance: SuspenseInstance,
   ): boolean {
     suspenseInstance.state = 'complete';
@@ -141,6 +159,7 @@ const ReactNoopServer = ReactFizzServer({
   },
   writeStartPendingSuspenseBoundary(
     destination: Destination,
+    responseState: ResponseState,
     suspenseInstance: SuspenseInstance,
   ): boolean {
     suspenseInstance.state = 'pending';
@@ -150,6 +169,7 @@ const ReactNoopServer = ReactFizzServer({
   },
   writeStartClientRenderedSuspenseBoundary(
     destination: Destination,
+    responseState: ResponseState,
     suspenseInstance: SuspenseInstance,
   ): boolean {
     suspenseInstance.state = 'client-render';
@@ -157,7 +177,13 @@ const ReactNoopServer = ReactFizzServer({
     parent.children.push(suspenseInstance);
     destination.stack.push(suspenseInstance);
   },
-  writeEndSuspenseBoundary(destination: Destination): boolean {
+  writeEndCompletedSuspenseBoundary(destination: Destination): boolean {
+    destination.stack.pop();
+  },
+  writeEndPendingSuspenseBoundary(destination: Destination): boolean {
+    destination.stack.pop();
+  },
+  writeEndClientRenderedSuspenseBoundary(destination: Destination): boolean {
     destination.stack.pop();
   },
 
@@ -225,8 +251,8 @@ const ReactNoopServer = ReactFizzServer({
 
 type Options = {
   progressiveChunkSize?: number,
-  onReadyToStream?: () => void,
-  onCompleteAll?: () => void,
+  onShellReady?: () => void,
+  onAllReady?: () => void,
   onError?: (error: mixed) => void,
 };
 
@@ -242,16 +268,15 @@ function render(children: React$Element<any>, options?: Options): Destination {
   };
   const request = ReactNoopServer.createRequest(
     children,
-    destination,
     null,
     null,
     options ? options.progressiveChunkSize : undefined,
     options ? options.onError : undefined,
-    options ? options.onCompleteAll : undefined,
-    options ? options.onReadyToStream : undefined,
+    options ? options.onAllReady : undefined,
+    options ? options.onShellReady : undefined,
   );
   ReactNoopServer.startWork(request);
-  ReactNoopServer.startFlowing(request);
+  ReactNoopServer.startFlowing(request, destination);
   return destination;
 }
 

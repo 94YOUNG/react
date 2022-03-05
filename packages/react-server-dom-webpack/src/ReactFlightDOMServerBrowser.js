@@ -25,22 +25,22 @@ function renderToReadableStream(
   webpackMap: BundlerConfig,
   options?: Options,
 ): ReadableStream {
-  let request;
-  return new ReadableStream({
+  const request = createRequest(
+    model,
+    webpackMap,
+    options ? options.onError : undefined,
+  );
+  const stream = new ReadableStream({
+    type: 'bytes',
     start(controller) {
-      request = createRequest(
-        model,
-        controller,
-        webpackMap,
-        options ? options.onError : undefined,
-      );
       startWork(request);
     },
     pull(controller) {
-      startFlowing(request);
+      startFlowing(request, controller);
     },
     cancel(reason) {},
   });
+  return stream;
 }
 
 export {renderToReadableStream};
