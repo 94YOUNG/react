@@ -32,7 +32,7 @@ type Options = {|
   bootstrapModules?: Array<string>,
   progressiveChunkSize?: number,
   signal?: AbortSignal,
-  onError?: (error: mixed) => void,
+  onError?: (error: mixed) => ?string,
 |};
 
 // TODO: Move to sub-classing ReadableStream.
@@ -53,20 +53,28 @@ function renderToReadableStream(
     });
 
     function onShellReady() {
-      const stream: ReactDOMServerReadableStream = (new ReadableStream({
-        type: 'bytes',
-        pull(controller) {
-          startFlowing(request, controller);
+      const stream: ReactDOMServerReadableStream = (new ReadableStream(
+        {
+          type: 'bytes',
+          pull(controller) {
+            startFlowing(request, controller);
+          },
+          cancel(reason) {
+            abort(request);
+          },
         },
-        cancel(reason) {
-          abort(request);
-        },
-      }): any);
+        // $FlowFixMe size() methods are not allowed on byte streams.
+        {highWaterMark: 0},
+      ): any);
       // TODO: Move to sub-classing ReadableStream.
       stream.allReady = allReady;
       resolve(stream);
     }
     function onShellError(error: mixed) {
+      // If the shell errors the caller of `renderToReadableStream` won't have access to `allReady`.
+      // However, `allReady` will be rejected by `onFatalError` as well.
+      // So we need to catch the duplicate, uncatchable fatal error in `allReady` to prevent a `UnhandledPromiseRejection`.
+      allReady.catch(() => {});
       reject(error);
     }
     const request = createRequest(
@@ -88,11 +96,15 @@ function renderToReadableStream(
     );
     if (options && options.signal) {
       const signal = options.signal;
-      const listener = () => {
-        abort(request);
-        signal.removeEventListener('abort', listener);
-      };
-      signal.addEventListener('abort', listener);
+      if (signal.aborted) {
+        abort(request, (signal: any).reason);
+      } else {
+        const listener = () => {
+          abort(request, (signal: any).reason);
+          signal.removeEventListener('abort', listener);
+        };
+        signal.addEventListener('abort', listener);
+      }
     }
     startWork(request);
   });
