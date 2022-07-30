@@ -17,16 +17,12 @@ import {getWorkInProgressTransitions} from './ReactFiberWorkLoop.old';
 
 export type SuspenseInfo = {name: string | null};
 
-export type TransitionObject = {
-  transitionName: string,
-  startTime: number,
-};
-
-export type MarkerTransitionObject = TransitionObject & {markerName: string};
 export type PendingTransitionCallbacks = {
-  transitionStart: Array<TransitionObject> | null,
-  transitionComplete: Array<TransitionObject> | null,
-  markerComplete: Array<MarkerTransitionObject> | null,
+  transitionStart: Array<Transition> | null,
+  transitionProgress: Map<Transition, PendingBoundaries> | null,
+  transitionComplete: Array<Transition> | null,
+  markerProgress: Map<string, TracingMarkerInstance> | null,
+  markerComplete: Map<string, Set<Transition>> | null,
 };
 
 export type Transition = {
@@ -41,11 +37,12 @@ export type BatchConfigTransition = {
 };
 
 export type TracingMarkerInstance = {|
-  pendingSuspenseBoundaries: PendingSuspenseBoundaries | null,
+  pendingBoundaries: PendingBoundaries | null,
   transitions: Set<Transition> | null,
-|} | null;
+  name?: string,
+|};
 
-export type PendingSuspenseBoundaries = Map<OffscreenInstance, SuspenseInfo>;
+export type PendingBoundaries = Map<OffscreenInstance, SuspenseInfo>;
 
 export function processTransitionCallbacks(
   pendingTransitions: PendingTransitionCallbacks,
@@ -55,42 +52,69 @@ export function processTransitionCallbacks(
   if (enableTransitionTracing) {
     if (pendingTransitions !== null) {
       const transitionStart = pendingTransitions.transitionStart;
-      if (transitionStart !== null) {
-        transitionStart.forEach(transition => {
-          if (callbacks.onTransitionStart != null) {
-            callbacks.onTransitionStart(
-              transition.transitionName,
-              transition.startTime,
-            );
+      const onTransitionStart = callbacks.onTransitionStart;
+      if (transitionStart !== null && onTransitionStart != null) {
+        transitionStart.forEach(transition =>
+          onTransitionStart(transition.name, transition.startTime),
+        );
+      }
+
+      const markerProgress = pendingTransitions.markerProgress;
+      const onMarkerProgress = callbacks.onMarkerProgress;
+      if (onMarkerProgress != null && markerProgress !== null) {
+        markerProgress.forEach((markerInstance, markerName) => {
+          if (markerInstance.transitions !== null) {
+            const pending =
+              markerInstance.pendingBoundaries !== null
+                ? Array.from(markerInstance.pendingBoundaries.values())
+                : [];
+            markerInstance.transitions.forEach(transition => {
+              onMarkerProgress(
+                transition.name,
+                markerName,
+                transition.startTime,
+                endTime,
+                pending,
+              );
+            });
           }
         });
       }
 
       const markerComplete = pendingTransitions.markerComplete;
-      if (markerComplete !== null) {
-        markerComplete.forEach(transition => {
-          if (callbacks.onMarkerComplete != null) {
-            callbacks.onMarkerComplete(
-              transition.transitionName,
-              transition.markerName,
+      const onMarkerComplete = callbacks.onMarkerComplete;
+      if (markerComplete !== null && onMarkerComplete != null) {
+        markerComplete.forEach((transitions, markerName) => {
+          transitions.forEach(transition => {
+            onMarkerComplete(
+              transition.name,
+              markerName,
               transition.startTime,
               endTime,
             );
-          }
+          });
+        });
+      }
+
+      const transitionProgress = pendingTransitions.transitionProgress;
+      const onTransitionProgress = callbacks.onTransitionProgress;
+      if (onTransitionProgress != null && transitionProgress !== null) {
+        transitionProgress.forEach((pending, transition) => {
+          onTransitionProgress(
+            transition.name,
+            transition.startTime,
+            endTime,
+            Array.from(pending.values()),
+          );
         });
       }
 
       const transitionComplete = pendingTransitions.transitionComplete;
-      if (transitionComplete !== null) {
-        transitionComplete.forEach(transition => {
-          if (callbacks.onTransitionComplete != null) {
-            callbacks.onTransitionComplete(
-              transition.transitionName,
-              transition.startTime,
-              endTime,
-            );
-          }
-        });
+      const onTransitionComplete = callbacks.onTransitionComplete;
+      if (transitionComplete !== null && onTransitionComplete != null) {
+        transitionComplete.forEach(transition =>
+          onTransitionComplete(transition.name, transition.startTime, endTime),
+        );
       }
     }
   }
@@ -121,10 +145,11 @@ export function pushRootMarkerInstance(workInProgress: Fiber): void {
     if (transitions !== null) {
       transitions.forEach(transition => {
         if (!root.incompleteTransitions.has(transition)) {
-          root.incompleteTransitions.set(transition, {
+          const markerInstance: TracingMarkerInstance = {
             transitions: new Set([transition]),
-            pendingSuspenseBoundaries: null,
-          });
+            pendingBoundaries: null,
+          };
+          root.incompleteTransitions.set(transition, markerInstance);
         }
       });
     }

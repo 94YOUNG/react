@@ -1508,19 +1508,27 @@ function completeWork(
     }
     case OffscreenComponent:
     case LegacyHiddenComponent: {
+      popSuspenseHandler(workInProgress);
       popHiddenContext(workInProgress);
       const nextState: OffscreenState | null = workInProgress.memoizedState;
       const nextIsHidden = nextState !== null;
 
-      if (current !== null) {
-        const prevState: OffscreenState | null = current.memoizedState;
-        const prevIsHidden = prevState !== null;
-        if (
-          prevIsHidden !== nextIsHidden &&
-          // LegacyHidden doesn't do any hiding — it only pre-renders.
-          (!enableLegacyHidden || workInProgress.tag !== LegacyHiddenComponent)
-        ) {
-          workInProgress.flags |= Visibility;
+      // Schedule a Visibility effect if the visibility has changed
+      if (enableLegacyHidden && workInProgress.tag === LegacyHiddenComponent) {
+        // LegacyHidden doesn't do any hiding — it only pre-renders.
+      } else {
+        if (current !== null) {
+          const prevState: OffscreenState | null = current.memoizedState;
+          const prevIsHidden = prevState !== null;
+          if (prevIsHidden !== nextIsHidden) {
+            workInProgress.flags |= Visibility;
+          }
+        } else {
+          // On initial mount, we only need a Visibility effect if the tree
+          // is hidden.
+          if (nextIsHidden) {
+            workInProgress.flags |= Visibility;
+          }
         }
       }
 
@@ -1529,7 +1537,11 @@ function completeWork(
       } else {
         // Don't bubble properties for hidden children unless we're rendering
         // at offscreen priority.
-        if (includesSomeLane(renderLanes, (OffscreenLane: Lane))) {
+        if (
+          includesSomeLane(renderLanes, (OffscreenLane: Lane)) &&
+          // Also don't bubble if the tree suspended
+          (workInProgress.flags & DidCapture) === NoLanes
+        ) {
           bubbleProperties(workInProgress);
           // Check if there was an insertion or update in the hidden subtree.
           // If so, we need to hide those nodes in the commit phase, so
@@ -1542,6 +1554,12 @@ function completeWork(
             workInProgress.flags |= Visibility;
           }
         }
+      }
+
+      if (workInProgress.updateQueue !== null) {
+        // Schedule an effect to attach Suspense retry listeners
+        // TODO: Move to passive phase
+        workInProgress.flags |= Update;
       }
 
       if (enableCache) {
