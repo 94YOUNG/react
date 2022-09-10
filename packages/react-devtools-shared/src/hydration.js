@@ -30,7 +30,7 @@ export const meta = {
   unserializable: Symbol('unserializable'),
 };
 
-export type Dehydrated = {|
+export type Dehydrated = {
   inspectable: boolean,
   name: string | null,
   preview_long: string | null,
@@ -38,7 +38,7 @@ export type Dehydrated = {|
   readonly?: boolean,
   size?: number,
   type: string,
-|};
+};
 
 // Typed arrays and other complex iteratable objects (e.g. Map, Set, ImmutableJS) need special handling.
 // These objects can't be serialized without losing type information,
@@ -396,7 +396,7 @@ export function hydrate(
       parent[last] = undefined;
     } else {
       // Replace the string keys with Symbols so they're non-enumerable.
-      const replaced: {[key: Symbol]: boolean | string, ...} = {};
+      const replaced: {[key: symbol]: boolean | string, ...} = {};
       replaced[meta.inspectable] = !!value.inspectable;
       replaced[meta.inspected] = false;
       replaced[meta.name] = value.name;

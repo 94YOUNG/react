@@ -9,6 +9,7 @@
 
 import type {ReactNodeList} from 'shared/ReactTypes';
 import type {Writable} from 'stream';
+import type {BootstrapScriptDescriptor} from './ReactDOMServerFormatConfig';
 
 import ReactVersion from 'shared/ReactVersion';
 
@@ -33,26 +34,26 @@ function createAbortHandler(request, reason) {
   return () => abort(request, new Error(reason));
 }
 
-type Options = {|
+type Options = {
   identifierPrefix?: string,
   namespaceURI?: string,
   nonce?: string,
   bootstrapScriptContent?: string,
-  bootstrapScripts?: Array<string>,
-  bootstrapModules?: Array<string>,
+  bootstrapScripts?: Array<string | BootstrapScriptDescriptor>,
+  bootstrapModules?: Array<string | BootstrapScriptDescriptor>,
   progressiveChunkSize?: number,
   onShellReady?: () => void,
   onShellError?: (error: mixed) => void,
   onAllReady?: () => void,
   onError?: (error: mixed) => ?string,
-|};
+};
 
-type PipeableStream = {|
+type PipeableStream = {
   // Cancel any pending I/O and put anything remaining into
   // client rendered mode.
   abort(reason: mixed): void,
   pipe<T: Writable>(destination: T): T,
-|};
+};
 
 function createRequestImpl(children: ReactNodeList, options: void | Options) {
   return createRequest(

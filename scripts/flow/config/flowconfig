@@ -38,26 +38,20 @@
 [lints]
 untyped-type-import=error
 
+# TODO: We might want to enable this this as a error (the default), it
+#       disallows adding undefined and numbers.
+unsafe-addition=off
+
 [options]
 server.max_workers=4
 esproposal.class_static_fields=enable
 esproposal.class_instance_fields=enable
 esproposal.optional_chaining=enable
+exact_by_default=true
+munge_underscores=false
 
 # Substituted by createFlowConfig.js:
 %REACT_RENDERER_FLOW_OPTIONS%
 
-munge_underscores=false
-
-suppress_type=$FlowIssue
-suppress_type=$FlowFixMe
-suppress_type=$FixMe
-suppress_type=$FlowExpectedError
-
-suppress_comment=\\(.\\|\n\\)*\\$FlowFixMe
-suppress_comment=\\(.\\|\n\\)*\\$FlowIssue
-suppress_comment=\\(.\\|\n\\)*\\$FlowFixedInNextDeploy
-suppress_comment=\\(.\\|\n\\)*\\$FlowExpectedError
-
 [version]
-^0.97.0
+^0.131.0

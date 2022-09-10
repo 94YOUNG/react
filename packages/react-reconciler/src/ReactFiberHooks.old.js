@@ -13,6 +13,8 @@ import type {
   MutableSourceSubscribeFn,
   ReactContext,
   StartTransitionOptions,
+  Usable,
+  Thenable,
 } from 'shared/ReactTypes';
 import type {Fiber, Dispatcher, HookType} from './ReactInternalTypes';
 import type {Lanes, Lane} from './ReactFiberLane.old';
@@ -28,18 +30,18 @@ import {
   enableNewReconciler,
   enableCache,
   enableUseRefAccessWarning,
-  enableStrictEffects,
   enableLazyContextPropagation,
   enableUseMutableSource,
   enableTransitionTracing,
+  enableUseHook,
+  enableUseMemoCacheHook,
 } from 'shared/ReactFeatureFlags';
-
 import {
-  NoMode,
-  ConcurrentMode,
-  DebugTracingMode,
-  StrictEffectsMode,
-} from './ReactTypeOfMode';
+  REACT_CONTEXT_TYPE,
+  REACT_SERVER_CONTEXT_TYPE,
+} from 'shared/ReactSymbols';
+
+import {NoMode, ConcurrentMode, DebugTracingMode} from './ReactTypeOfMode';
 import {
   NoLane,
   SyncLane,
@@ -67,8 +69,6 @@ import {readContext, checkIfContextChanged} from './ReactFiberNewContext.old';
 import {HostRoot, CacheComponent} from './ReactWorkTags';
 import {
   LayoutStatic as LayoutStaticEffect,
-  MountLayoutDev as MountLayoutDevEffect,
-  MountPassiveDev as MountPassiveDevEffect,
   Passive as PassiveEffect,
   PassiveStatic as PassiveStaticEffect,
   StaticMask as StaticMaskEffect,
@@ -119,24 +119,28 @@ import {
 } from './ReactFiberConcurrentUpdates.old';
 import {getTreeId} from './ReactFiberTreeContext.old';
 import {now} from './Scheduler';
+import {
+  trackUsedThenable,
+  getPreviouslyUsedThenableAtIndex,
+} from './ReactFiberWakeable.old';
 
 const {ReactCurrentDispatcher, ReactCurrentBatchConfig} = ReactSharedInternals;
 
-export type Update<S, A> = {|
+export type Update<S, A> = {
   lane: Lane,
   action: A,
   hasEagerState: boolean,
   eagerState: S | null,
   next: Update<S, A>,
-|};
+};
 
-export type UpdateQueue<S, A> = {|
+export type UpdateQueue<S, A> = {
   pending: Update<S, A> | null,
   lanes: Lanes,
   dispatch: (A => mixed) | null,
   lastRenderedReducer: ((S, A) => S) | null,
   lastRenderedState: S | null,
-|};
+};
 
 let didWarnAboutMismatchedHooksForComponent;
 let didWarnUncachedGetSnapshot;
@@ -144,36 +148,36 @@ if (__DEV__) {
   didWarnAboutMismatchedHooksForComponent = new Set();
 }
 
-export type Hook = {|
+export type Hook = {
   memoizedState: any,
   baseState: any,
   baseQueue: Update<any, any> | null,
   queue: any,
   next: Hook | null,
-|};
+};
 
-export type Effect = {|
+export type Effect = {
   tag: HookFlags,
   create: () => (() => void) | void,
   destroy: (() => void) | void,
   deps: Array<mixed> | null,
   next: Effect,
-|};
+};
 
-type StoreInstance<T> = {|
+type StoreInstance<T> = {
   value: T,
   getSnapshot: () => T,
-|};
+};
 
-type StoreConsistencyCheck<T> = {|
+type StoreConsistencyCheck<T> = {
   value: T,
   getSnapshot: () => T,
-|};
+};
 
-export type FunctionComponentUpdateQueue = {|
+export type FunctionComponentUpdateQueue = {
   lastEffect: Effect | null,
   stores: Array<StoreConsistencyCheck<any>> | null,
-|};
+};
 
 type BasicStateAction<S> = (S => S) | S;
 
@@ -204,6 +208,9 @@ let didScheduleRenderPhaseUpdate: boolean = false;
 let didScheduleRenderPhaseUpdateDuringThisPass: boolean = false;
 // Counts the number of useId hooks in this component.
 let localIdCounter: number = 0;
+// Counts number of `use`-d thenables
+let thenableIndexCounter: number = 0;
+
 // Used for ids that are generated completely client-side (i.e. not during
 // hydration). This counter is global, so client ids are not stable across
 // render attempts.
@@ -402,6 +409,7 @@ export function renderWithHooks<Props, SecondArg>(
 
   // didScheduleRenderPhaseUpdate = false;
   // localIdCounter = 0;
+  // thenableIndexCounter = 0;
 
   // TODO Warn if no hooks are used at all during mount, then some are used during update.
   // Currently we will identify the update render as a mount because memoizedState === null.
@@ -440,6 +448,7 @@ export function renderWithHooks<Props, SecondArg>(
     do {
       didScheduleRenderPhaseUpdateDuringThisPass = false;
       localIdCounter = 0;
+      thenableIndexCounter = 0;
 
       if (numberOfReRenders >= RE_RENDER_LIMIT) {
         throw new Error(
@@ -523,6 +532,7 @@ export function renderWithHooks<Props, SecondArg>(
   didScheduleRenderPhaseUpdate = false;
   // This is reset by checkDidRenderIdHook
   // localIdCounter = 0;
+  thenableIndexCounter = 0;
 
   if (didRenderTooFewHooks) {
     throw new Error(
@@ -569,22 +579,7 @@ export function bailoutHooks(
   lanes: Lanes,
 ) {
   workInProgress.updateQueue = current.updateQueue;
-  // TODO: Don't need to reset the flags here, because they're reset in the
-  // complete phase (bubbleProperties).
-  if (
-    __DEV__ &&
-    enableStrictEffects &&
-    (workInProgress.mode & StrictEffectsMode) !== NoMode
-  ) {
-    workInProgress.flags &= ~(
-      MountPassiveDevEffect |
-      MountLayoutDevEffect |
-      PassiveEffect |
-      UpdateEffect
-    );
-  } else {
-    workInProgress.flags &= ~(PassiveEffect | UpdateEffect);
-  }
+  workInProgress.flags &= ~(PassiveEffect | UpdateEffect);
   current.lanes = removeLanes(current.lanes, lanes);
 }
 
@@ -630,6 +625,7 @@ export function resetHooksAfterThrow(): void {
 
   didScheduleRenderPhaseUpdateDuringThisPass = false;
   localIdCounter = 0;
+  thenableIndexCounter = 0;
 }
 
 function mountWorkInProgressHook(): Hook {
@@ -719,6 +715,79 @@ function createFunctionComponentUpdateQueue(): FunctionComponentUpdateQueue {
     lastEffect: null,
     stores: null,
   };
+}
+
+function use<T>(usable: Usable<T>): T {
+  if (usable !== null && typeof usable === 'object') {
+    if (typeof usable.then === 'function') {
+      // This is a thenable.
+      const thenable: Thenable<T> = (usable: any);
+
+      // Track the position of the thenable within this fiber.
+      const index = thenableIndexCounter;
+      thenableIndexCounter += 1;
+
+      switch (thenable.status) {
+        case 'fulfilled': {
+          const fulfilledValue: T = thenable.value;
+          return fulfilledValue;
+        }
+        case 'rejected': {
+          const rejectedError = thenable.reason;
+          throw rejectedError;
+        }
+        default: {
+          const prevThenableAtIndex: Thenable<T> | null = getPreviouslyUsedThenableAtIndex(
+            index,
+          );
+          if (prevThenableAtIndex !== null) {
+            switch (prevThenableAtIndex.status) {
+              case 'fulfilled': {
+                const fulfilledValue: T = prevThenableAtIndex.value;
+                return fulfilledValue;
+              }
+              case 'rejected': {
+                const rejectedError: mixed = prevThenableAtIndex.reason;
+                throw rejectedError;
+              }
+              default: {
+                // The thenable still hasn't resolved. Suspend with the same
+                // thenable as last time to avoid redundant listeners.
+                throw prevThenableAtIndex;
+              }
+            }
+          } else {
+            // This is the first time something has been used at this index.
+            // Stash the thenable at the current index so we can reuse it during
+            // the next attempt.
+            trackUsedThenable(thenable, index);
+
+            // Suspend.
+            // TODO: Throwing here is an implementation detail that allows us to
+            // unwind the call stack. But we shouldn't allow it to leak into
+            // userspace. Throw an opaque placeholder value instead of the
+            // actual thenable. If it doesn't get captured by the work loop, log
+            // a warning, because that means something in userspace must have
+            // caught it.
+            throw thenable;
+          }
+        }
+      }
+    } else if (
+      usable.$$typeof === REACT_CONTEXT_TYPE ||
+      usable.$$typeof === REACT_SERVER_CONTEXT_TYPE
+    ) {
+      const context: ReactContext<T> = (usable: any);
+      return readContext(context);
+    }
+  }
+
+  // eslint-disable-next-line react-internal/safe-string-coercion
+  throw new Error('An unsupported type was passed to use(): ' + String(usable));
+}
+
+function useMemoCache(size: number): Array<any> {
+  throw new Error('Not implemented.');
 }
 
 function basicStateReducer<S>(state: S, action: BasicStateAction<S>): S {
@@ -965,14 +1034,14 @@ function rerenderReducer<S, I, A>(
   return [newState, dispatch];
 }
 
-type MutableSourceMemoizedState<Source, Snapshot> = {|
+type MutableSourceMemoizedState<Source, Snapshot> = {
   refs: {
     getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
     setSnapshot: Snapshot => void,
   },
   source: MutableSource<any>,
   subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-|};
+};
 
 function readFromUnsubscribedMutableSource<Source, Snapshot>(
   root: FiberRoot,
@@ -1585,7 +1654,7 @@ function getCallerStackFrame(): string {
     : stackFrames.slice(2, 3).join('\n');
 }
 
-function mountRef<T>(initialValue: T): {|current: T|} {
+function mountRef<T>(initialValue: T): {current: T} {
   const hook = mountWorkInProgressHook();
   if (enableUseRefAccessWarning) {
     if (__DEV__) {
@@ -1654,7 +1723,7 @@ function mountRef<T>(initialValue: T): {|current: T|} {
   }
 }
 
-function updateRef<T>(initialValue: T): {|current: T|} {
+function updateRef<T>(initialValue: T): {current: T} {
   const hook = updateWorkInProgressHook();
   return hook.memoizedState;
 }
@@ -1702,25 +1771,12 @@ function mountEffect(
   create: () => (() => void) | void,
   deps: Array<mixed> | void | null,
 ): void {
-  if (
-    __DEV__ &&
-    enableStrictEffects &&
-    (currentlyRenderingFiber.mode & StrictEffectsMode) !== NoMode
-  ) {
-    return mountEffectImpl(
-      MountPassiveDevEffect | PassiveEffect | PassiveStaticEffect,
-      HookPassive,
-      create,
-      deps,
-    );
-  } else {
-    return mountEffectImpl(
-      PassiveEffect | PassiveStaticEffect,
-      HookPassive,
-      create,
-      deps,
-    );
-  }
+  return mountEffectImpl(
+    PassiveEffect | PassiveStaticEffect,
+    HookPassive,
+    create,
+    deps,
+  );
 }
 
 function updateEffect(
@@ -1748,14 +1804,7 @@ function mountLayoutEffect(
   create: () => (() => void) | void,
   deps: Array<mixed> | void | null,
 ): void {
-  let fiberFlags: Flags = UpdateEffect | LayoutStaticEffect;
-  if (
-    __DEV__ &&
-    enableStrictEffects &&
-    (currentlyRenderingFiber.mode & StrictEffectsMode) !== NoMode
-  ) {
-    fiberFlags |= MountLayoutDevEffect;
-  }
+  const fiberFlags: Flags = UpdateEffect | LayoutStaticEffect;
   return mountEffectImpl(fiberFlags, HookLayout, create, deps);
 }
 
@@ -1768,7 +1817,7 @@ function updateLayoutEffect(
 
 function imperativeHandleEffect<T>(
   create: () => T,
-  ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+  ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
 ) {
   if (typeof ref === 'function') {
     const refCallback = ref;
@@ -1797,7 +1846,7 @@ function imperativeHandleEffect<T>(
 }
 
 function mountImperativeHandle<T>(
-  ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+  ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
   create: () => T,
   deps: Array<mixed> | void | null,
 ): void {
@@ -1815,14 +1864,7 @@ function mountImperativeHandle<T>(
   const effectDeps =
     deps !== null && deps !== undefined ? deps.concat([ref]) : null;
 
-  let fiberFlags: Flags = UpdateEffect | LayoutStaticEffect;
-  if (
-    __DEV__ &&
-    enableStrictEffects &&
-    (currentlyRenderingFiber.mode & StrictEffectsMode) !== NoMode
-  ) {
-    fiberFlags |= MountLayoutDevEffect;
-  }
+  const fiberFlags: Flags = UpdateEffect | LayoutStaticEffect;
   return mountEffectImpl(
     fiberFlags,
     HookLayout,
@@ -1832,7 +1874,7 @@ function mountImperativeHandle<T>(
 }
 
 function updateImperativeHandle<T>(
-  ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+  ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
   create: () => T,
   deps: Array<mixed> | void | null,
 ): void {
@@ -2416,6 +2458,12 @@ if (enableCache) {
   (ContextOnlyDispatcher: Dispatcher).getCacheForType = getCacheForType;
   (ContextOnlyDispatcher: Dispatcher).useCacheRefresh = throwInvalidHookError;
 }
+if (enableUseHook) {
+  (ContextOnlyDispatcher: Dispatcher).use = throwInvalidHookError;
+}
+if (enableUseMemoCacheHook) {
+  (ContextOnlyDispatcher: Dispatcher).useMemoCache = throwInvalidHookError;
+}
 
 const HooksDispatcherOnMount: Dispatcher = {
   readContext,
@@ -2444,6 +2492,12 @@ if (enableCache) {
   (HooksDispatcherOnMount: Dispatcher).getCacheForType = getCacheForType;
   (HooksDispatcherOnMount: Dispatcher).useCacheRefresh = mountRefresh;
 }
+if (enableUseHook) {
+  (HooksDispatcherOnMount: Dispatcher).use = use;
+}
+if (enableUseMemoCacheHook) {
+  (HooksDispatcherOnMount: Dispatcher).useMemoCache = useMemoCache;
+}
 const HooksDispatcherOnUpdate: Dispatcher = {
   readContext,
 
@@ -2470,6 +2524,12 @@ if (enableCache) {
   (HooksDispatcherOnUpdate: Dispatcher).getCacheSignal = getCacheSignal;
   (HooksDispatcherOnUpdate: Dispatcher).getCacheForType = getCacheForType;
   (HooksDispatcherOnUpdate: Dispatcher).useCacheRefresh = updateRefresh;
+}
+if (enableUseMemoCacheHook) {
+  (HooksDispatcherOnUpdate: Dispatcher).useMemoCache = useMemoCache;
+}
+if (enableUseHook) {
+  (HooksDispatcherOnUpdate: Dispatcher).use = use;
 }
 
 const HooksDispatcherOnRerender: Dispatcher = {
@@ -2498,6 +2558,12 @@ if (enableCache) {
   (HooksDispatcherOnRerender: Dispatcher).getCacheSignal = getCacheSignal;
   (HooksDispatcherOnRerender: Dispatcher).getCacheForType = getCacheForType;
   (HooksDispatcherOnRerender: Dispatcher).useCacheRefresh = updateRefresh;
+}
+if (enableUseHook) {
+  (HooksDispatcherOnRerender: Dispatcher).use = use;
+}
+if (enableUseMemoCacheHook) {
+  (HooksDispatcherOnRerender: Dispatcher).useMemoCache = useMemoCache;
 }
 
 let HooksDispatcherOnMountInDEV: Dispatcher | null = null;
@@ -2552,7 +2618,7 @@ if (__DEV__) {
       return mountEffect(create, deps);
     },
     useImperativeHandle<T>(
-      ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+      ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
       create: () => T,
       deps: Array<mixed> | void | null,
     ): void {
@@ -2606,7 +2672,7 @@ if (__DEV__) {
         ReactCurrentDispatcher.current = prevDispatcher;
       }
     },
-    useRef<T>(initialValue: T): {|current: T|} {
+    useRef<T>(initialValue: T): {current: T} {
       currentHookNameInDev = 'useRef';
       mountHookTypesDev();
       return mountRef(initialValue);
@@ -2674,6 +2740,12 @@ if (__DEV__) {
       return mountRefresh();
     };
   }
+  if (enableUseHook) {
+    (HooksDispatcherOnMountInDEV: Dispatcher).use = use;
+  }
+  if (enableUseMemoCacheHook) {
+    (HooksDispatcherOnMountInDEV: Dispatcher).useMemoCache = useMemoCache;
+  }
 
   HooksDispatcherOnMountWithHookTypesInDEV = {
     readContext<T>(context: ReactContext<T>): T {
@@ -2698,7 +2770,7 @@ if (__DEV__) {
       return mountEffect(create, deps);
     },
     useImperativeHandle<T>(
-      ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+      ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
       create: () => T,
       deps: Array<mixed> | void | null,
     ): void {
@@ -2748,7 +2820,7 @@ if (__DEV__) {
         ReactCurrentDispatcher.current = prevDispatcher;
       }
     },
-    useRef<T>(initialValue: T): {|current: T|} {
+    useRef<T>(initialValue: T): {current: T} {
       currentHookNameInDev = 'useRef';
       updateHookTypesDev();
       return mountRef(initialValue);
@@ -2816,6 +2888,12 @@ if (__DEV__) {
       return mountRefresh();
     };
   }
+  if (enableUseHook) {
+    (HooksDispatcherOnMountWithHookTypesInDEV: Dispatcher).use = use;
+  }
+  if (enableUseMemoCacheHook) {
+    (HooksDispatcherOnMountWithHookTypesInDEV: Dispatcher).useMemoCache = useMemoCache;
+  }
 
   HooksDispatcherOnUpdateInDEV = {
     readContext<T>(context: ReactContext<T>): T {
@@ -2840,7 +2918,7 @@ if (__DEV__) {
       return updateEffect(create, deps);
     },
     useImperativeHandle<T>(
-      ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+      ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
       create: () => T,
       deps: Array<mixed> | void | null,
     ): void {
@@ -2890,7 +2968,7 @@ if (__DEV__) {
         ReactCurrentDispatcher.current = prevDispatcher;
       }
     },
-    useRef<T>(initialValue: T): {|current: T|} {
+    useRef<T>(initialValue: T): {current: T} {
       currentHookNameInDev = 'useRef';
       updateHookTypesDev();
       return updateRef(initialValue);
@@ -2958,6 +3036,12 @@ if (__DEV__) {
       return updateRefresh();
     };
   }
+  if (enableUseHook) {
+    (HooksDispatcherOnUpdateInDEV: Dispatcher).use = use;
+  }
+  if (enableUseMemoCacheHook) {
+    (HooksDispatcherOnUpdateInDEV: Dispatcher).useMemoCache = useMemoCache;
+  }
 
   HooksDispatcherOnRerenderInDEV = {
     readContext<T>(context: ReactContext<T>): T {
@@ -2983,7 +3067,7 @@ if (__DEV__) {
       return updateEffect(create, deps);
     },
     useImperativeHandle<T>(
-      ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+      ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
       create: () => T,
       deps: Array<mixed> | void | null,
     ): void {
@@ -3033,7 +3117,7 @@ if (__DEV__) {
         ReactCurrentDispatcher.current = prevDispatcher;
       }
     },
-    useRef<T>(initialValue: T): {|current: T|} {
+    useRef<T>(initialValue: T): {current: T} {
       currentHookNameInDev = 'useRef';
       updateHookTypesDev();
       return updateRef(initialValue);
@@ -3101,6 +3185,12 @@ if (__DEV__) {
       return updateRefresh();
     };
   }
+  if (enableUseHook) {
+    (HooksDispatcherOnRerenderInDEV: Dispatcher).use = use;
+  }
+  if (enableUseMemoCacheHook) {
+    (HooksDispatcherOnRerenderInDEV: Dispatcher).useMemoCache = useMemoCache;
+  }
 
   InvalidNestedHooksDispatcherOnMountInDEV = {
     readContext<T>(context: ReactContext<T>): T {
@@ -3129,7 +3219,7 @@ if (__DEV__) {
       return mountEffect(create, deps);
     },
     useImperativeHandle<T>(
-      ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+      ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
       create: () => T,
       deps: Array<mixed> | void | null,
     ): void {
@@ -3184,7 +3274,7 @@ if (__DEV__) {
         ReactCurrentDispatcher.current = prevDispatcher;
       }
     },
-    useRef<T>(initialValue: T): {|current: T|} {
+    useRef<T>(initialValue: T): {current: T} {
       currentHookNameInDev = 'useRef';
       warnInvalidHookAccess();
       mountHookTypesDev();
@@ -3260,6 +3350,22 @@ if (__DEV__) {
       return mountRefresh();
     };
   }
+  if (enableUseHook) {
+    (InvalidNestedHooksDispatcherOnMountInDEV: Dispatcher).use = function<T>(
+      usable: Usable<T>,
+    ): T {
+      warnInvalidHookAccess();
+      return use(usable);
+    };
+  }
+  if (enableUseMemoCacheHook) {
+    (InvalidNestedHooksDispatcherOnMountInDEV: Dispatcher).useMemoCache = function(
+      size: number,
+    ): Array<any> {
+      warnInvalidHookAccess();
+      return useMemoCache(size);
+    };
+  }
 
   InvalidNestedHooksDispatcherOnUpdateInDEV = {
     readContext<T>(context: ReactContext<T>): T {
@@ -3288,7 +3394,7 @@ if (__DEV__) {
       return updateEffect(create, deps);
     },
     useImperativeHandle<T>(
-      ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+      ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
       create: () => T,
       deps: Array<mixed> | void | null,
     ): void {
@@ -3343,7 +3449,7 @@ if (__DEV__) {
         ReactCurrentDispatcher.current = prevDispatcher;
       }
     },
-    useRef<T>(initialValue: T): {|current: T|} {
+    useRef<T>(initialValue: T): {current: T} {
       currentHookNameInDev = 'useRef';
       warnInvalidHookAccess();
       updateHookTypesDev();
@@ -3419,6 +3525,22 @@ if (__DEV__) {
       return updateRefresh();
     };
   }
+  if (enableUseHook) {
+    (InvalidNestedHooksDispatcherOnUpdateInDEV: Dispatcher).use = function<T>(
+      usable: Usable<T>,
+    ): T {
+      warnInvalidHookAccess();
+      return use(usable);
+    };
+  }
+  if (enableUseMemoCacheHook) {
+    (InvalidNestedHooksDispatcherOnUpdateInDEV: Dispatcher).useMemoCache = function(
+      size: number,
+    ): Array<any> {
+      warnInvalidHookAccess();
+      return useMemoCache(size);
+    };
+  }
 
   InvalidNestedHooksDispatcherOnRerenderInDEV = {
     readContext<T>(context: ReactContext<T>): T {
@@ -3448,7 +3570,7 @@ if (__DEV__) {
       return updateEffect(create, deps);
     },
     useImperativeHandle<T>(
-      ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+      ref: {current: T | null} | ((inst: T | null) => mixed) | null | void,
       create: () => T,
       deps: Array<mixed> | void | null,
     ): void {
@@ -3503,7 +3625,7 @@ if (__DEV__) {
         ReactCurrentDispatcher.current = prevDispatcher;
       }
     },
-    useRef<T>(initialValue: T): {|current: T|} {
+    useRef<T>(initialValue: T): {current: T} {
       currentHookNameInDev = 'useRef';
       warnInvalidHookAccess();
       updateHookTypesDev();
@@ -3577,6 +3699,22 @@ if (__DEV__) {
       currentHookNameInDev = 'useCacheRefresh';
       updateHookTypesDev();
       return updateRefresh();
+    };
+  }
+  if (enableUseHook) {
+    (InvalidNestedHooksDispatcherOnRerenderInDEV: Dispatcher).use = function<T>(
+      usable: Usable<T>,
+    ): T {
+      warnInvalidHookAccess();
+      return use(usable);
+    };
+  }
+  if (enableUseMemoCacheHook) {
+    (InvalidNestedHooksDispatcherOnRerenderInDEV: Dispatcher).useMemoCache = function(
+      size: number,
+    ): Array<any> {
+      warnInvalidHookAccess();
+      return useMemoCache(size);
     };
   }
 }

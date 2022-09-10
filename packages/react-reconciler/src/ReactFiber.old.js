@@ -98,6 +98,7 @@ import {
   REACT_CACHE_TYPE,
   REACT_TRACING_MARKER_TYPE,
 } from 'shared/ReactSymbols';
+import {TransitionTracingMarker} from './ReactFiberTracingMarkerComponent.old';
 
 export type {Fiber};
 
@@ -770,8 +771,11 @@ export function createFiberFromTracingMarker(
   fiber.elementType = REACT_TRACING_MARKER_TYPE;
   fiber.lanes = lanes;
   const tracingMarkerInstance: TracingMarkerInstance = {
+    tag: TransitionTracingMarker,
     transitions: null,
     pendingBoundaries: null,
+    aborts: null,
+    name: pendingProps.name,
   };
   fiber.stateNode = tracingMarkerInstance;
   return fiber;

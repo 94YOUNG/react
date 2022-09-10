@@ -28,7 +28,6 @@ export const consoleManagedByDevToolsDuringStrictMode = __VARIANT__;
 export const enableCapturePhaseSelectiveHydrationWithoutDiscreteEventReplay = __VARIANT__;
 export const enableClientRenderFallbackOnTextMismatch = __VARIANT__;
 export const enableTransitionTracing = __VARIANT__;
-export const enableSymbolFallbackForWWW = __VARIANT__;
 // Enable this flag to help with concurrent mode debugging.
 // It logs information to the console about React scheduling, rendering, and commit phases.
 //
@@ -60,5 +59,6 @@ export const disableNativeComponentFrames = false;
 export const createRootStrictEffectsByDefault = false;
 export const enableStrictEffects = false;
 export const allowConcurrentByDefault = true;
+export const enableFloat = false;
 // You probably *don't* want to add more hardcoded ones.
 // Instead, try to add them above with the __VARIANT__ value.

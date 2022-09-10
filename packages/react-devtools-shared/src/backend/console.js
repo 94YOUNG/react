@@ -69,12 +69,12 @@ type OnErrorOrWarning = (
 
 const injectedRenderers: Map<
   ReactRenderer,
-  {|
+  {
     currentDispatcherRef: CurrentDispatcherRef,
     getCurrentFiber: () => Fiber | null,
     onErrorOrWarning: ?OnErrorOrWarning,
     workTagMap: WorkTagMap,
-  |},
+  },
 > = new Map();
 
 let targetConsole: Object = console;
@@ -301,7 +301,15 @@ let unpatchForStrictModeFn: null | (() => void) = null;
 // NOTE: KEEP IN SYNC with src/hook.js:patchConsoleForInitialRenderInStrictMode
 export function patchForStrictMode() {
   if (consoleManagedByDevToolsDuringStrictMode) {
-    const overrideConsoleMethods = ['error', 'trace', 'warn', 'log'];
+    const overrideConsoleMethods = [
+      'error',
+      'group',
+      'groupCollapsed',
+      'info',
+      'log',
+      'trace',
+      'warn',
+    ];
 
     if (unpatchForStrictModeFn !== null) {
       // Don't patch twice.

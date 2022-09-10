@@ -40,14 +40,14 @@ import {
   REACT_LAZY_TYPE,
 } from 'shared/ReactSymbols';
 
-export type Family = {|
+export type Family = {
   current: any,
-|};
+};
 
-export type RefreshUpdate = {|
+export type RefreshUpdate = {
   staleFamilies: Set<Family>,
   updatedFamilies: Set<Family>,
-|};
+};
 
 // Resolves type to a family.
 type RefreshHandler = any => Family | void;
@@ -222,6 +222,7 @@ export function markFailedErrorBoundaryForHotReloading(fiber: Fiber) {
       return;
     }
     if (failedBoundaries === null) {
+      // $FlowFixMe Flow got confused by the feature check above.
       failedBoundaries = new WeakSet();
     }
     failedBoundaries.add(fiber);

@@ -48,7 +48,7 @@ export const NUMERIC = 5;
 // When falsy, it should be removed.
 export const POSITIVE_NUMERIC = 6;
 
-export type PropertyInfo = {|
+export type PropertyInfo = {
   +acceptsBooleans: boolean,
   +attributeName: string,
   +attributeNamespace: string | null,
@@ -57,7 +57,7 @@ export type PropertyInfo = {|
   +type: PropertyType,
   +sanitizeURL: boolean,
   +removeEmptyString: boolean,
-|};
+};
 
 /* eslint-disable max-len */
 export const ATTRIBUTE_NAME_START_CHAR =
@@ -123,7 +123,7 @@ export function shouldRemoveAttributeWithWarning(
   }
   switch (typeof value) {
     case 'function':
-    // $FlowIssue symbol is perfectly valid here
+    // $FlowFixMe symbol is perfectly valid here
     case 'symbol': // eslint-disable-line
       return true;
     case 'boolean': {
