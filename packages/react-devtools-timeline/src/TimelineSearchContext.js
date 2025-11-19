@@ -1,11 +1,13 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *
  * @flow
  */
+
+import type {ReactContext} from 'shared/ReactTypes';
 
 import * as React from 'react';
 import {createContext, useMemo, useReducer} from 'react';
@@ -38,7 +40,7 @@ type Action =
 
 type Dispatch = (action: Action) => void;
 
-const EMPTY_ARRAY = [];
+const EMPTY_ARRAY: Array<ReactComponentMeasure> = [];
 
 function reducer(state: State, action: Action): State {
   let {searchIndex, searchRegExp, searchResults, searchText} = state;
@@ -122,7 +124,9 @@ export type Context = {
   searchText: string,
 };
 
-const TimelineSearchContext = createContext<Context>(((null: any): Context));
+const TimelineSearchContext: ReactContext<Context> = createContext<Context>(
+  ((null: any): Context),
+);
 TimelineSearchContext.displayName = 'TimelineSearchContext';
 
 type Props = {
@@ -135,7 +139,7 @@ function TimelineSearchContextController({
   children,
   profilerData,
   viewState,
-}: Props) {
+}: Props): React.Node {
   const [state, dispatch] = useReducer<State, State, Action>(reducer, {
     profilerData,
     searchIndex: -1,

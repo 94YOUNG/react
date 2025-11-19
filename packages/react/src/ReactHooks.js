@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,21 +9,20 @@
 
 import type {Dispatcher} from 'react-reconciler/src/ReactInternalTypes';
 import type {
-  MutableSource,
-  MutableSourceGetSnapshotFn,
-  MutableSourceSubscribeFn,
   ReactContext,
   StartTransitionOptions,
   Usable,
+  Awaited,
 } from 'shared/ReactTypes';
+import {REACT_CONSUMER_TYPE} from 'shared/ReactSymbols';
 
-import ReactCurrentDispatcher from './ReactCurrentDispatcher';
+import ReactSharedInternals from 'shared/ReactSharedInternals';
 
 type BasicStateAction<S> = (S => S) | S;
 type Dispatch<A> = A => void;
 
 function resolveDispatcher() {
-  const dispatcher = ReactCurrentDispatcher.current;
+  const dispatcher = ReactSharedInternals.H;
   if (__DEV__) {
     if (dispatcher === null) {
       console.error(
@@ -32,7 +31,7 @@ function resolveDispatcher() {
           '1. You might have mismatching versions of React and the renderer (such as React DOM)\n' +
           '2. You might be breaking the Rules of Hooks\n' +
           '3. You might have more than one copy of React in the same app\n' +
-          'See https://reactjs.org/link/invalid-hook-call for tips about how to debug and fix this problem.',
+          'See https://react.dev/link/invalid-hook-call for tips about how to debug and fix this problem.',
       );
     }
   }
@@ -42,37 +41,23 @@ function resolveDispatcher() {
   return ((dispatcher: any): Dispatcher);
 }
 
-export function getCacheSignal(): AbortSignal {
-  const dispatcher = resolveDispatcher();
-  // $FlowFixMe This is unstable, thus optional
-  return dispatcher.getCacheSignal();
-}
-
 export function getCacheForType<T>(resourceType: () => T): T {
-  const dispatcher = resolveDispatcher();
-  // $FlowFixMe This is unstable, thus optional
+  const dispatcher = ReactSharedInternals.A;
+  if (!dispatcher) {
+    // If there is no dispatcher, then we treat this as not being cached.
+    return resourceType();
+  }
   return dispatcher.getCacheForType(resourceType);
 }
 
 export function useContext<T>(Context: ReactContext<T>): T {
   const dispatcher = resolveDispatcher();
   if (__DEV__) {
-    // TODO: add a more generic warning for invalid values.
-    if ((Context: any)._context !== undefined) {
-      const realContext = (Context: any)._context;
-      // Don't deduplicate because this legitimately causes bugs
-      // and nobody should be using this in existing code.
-      if (realContext.Consumer === Context) {
-        console.error(
-          'Calling useContext(Context.Consumer) is not supported, may cause bugs, and will be ' +
-            'removed in a future major release. Did you mean to call useContext(Context) instead?',
-        );
-      } else if (realContext.Provider === Context) {
-        console.error(
-          'Calling useContext(Context.Provider) is not supported. ' +
-            'Did you mean to call useContext(Context) instead?',
-        );
-      }
+    if (Context.$$typeof === REACT_CONSUMER_TYPE) {
+      console.error(
+        'Calling useContext(Context.Consumer) is not supported and will cause bugs. ' +
+          'Did you mean to call useContext(Context) instead?',
+      );
     }
   }
   return dispatcher.useContext(Context);
@@ -103,6 +88,14 @@ export function useEffect(
   create: () => (() => void) | void,
   deps: Array<mixed> | void | null,
 ): void {
+  if (__DEV__) {
+    if (create == null) {
+      console.warn(
+        'React Hook useEffect requires an effect callback. Did you forget to pass a callback to the hook?',
+      );
+    }
+  }
+
   const dispatcher = resolveDispatcher();
   return dispatcher.useEffect(create, deps);
 }
@@ -111,6 +104,14 @@ export function useInsertionEffect(
   create: () => (() => void) | void,
   deps: Array<mixed> | void | null,
 ): void {
+  if (__DEV__) {
+    if (create == null) {
+      console.warn(
+        'React Hook useInsertionEffect requires an effect callback. Did you forget to pass a callback to the hook?',
+      );
+    }
+  }
+
   const dispatcher = resolveDispatcher();
   return dispatcher.useInsertionEffect(create, deps);
 }
@@ -119,6 +120,14 @@ export function useLayoutEffect(
   create: () => (() => void) | void,
   deps: Array<mixed> | void | null,
 ): void {
+  if (__DEV__) {
+    if (create == null) {
+      console.warn(
+        'React Hook useLayoutEffect requires an effect callback. Did you forget to pass a callback to the hook?',
+      );
+    }
+  }
+
   const dispatcher = resolveDispatcher();
   return dispatcher.useLayoutEffect(create, deps);
 }
@@ -158,8 +167,6 @@ export function useDebugValue<T>(
   }
 }
 
-export const emptyObject = {};
-
 export function useTransition(): [
   boolean,
   (callback: () => void, options?: StartTransitionOptions) => void,
@@ -168,23 +175,14 @@ export function useTransition(): [
   return dispatcher.useTransition();
 }
 
-export function useDeferredValue<T>(value: T): T {
+export function useDeferredValue<T>(value: T, initialValue?: T): T {
   const dispatcher = resolveDispatcher();
-  return dispatcher.useDeferredValue(value);
+  return dispatcher.useDeferredValue(value, initialValue);
 }
 
 export function useId(): string {
   const dispatcher = resolveDispatcher();
   return dispatcher.useId();
-}
-
-export function useMutableSource<Source, Snapshot>(
-  source: MutableSource<Source>,
-  getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-  subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-): Snapshot {
-  const dispatcher = resolveDispatcher();
-  return dispatcher.useMutableSource(source, getSnapshot, subscribe);
 }
 
 export function useSyncExternalStore<T>(
@@ -202,18 +200,42 @@ export function useSyncExternalStore<T>(
 
 export function useCacheRefresh(): <T>(?() => T, ?T) => void {
   const dispatcher = resolveDispatcher();
-  // $FlowFixMe This is unstable, thus optional
+  // $FlowFixMe[not-a-function] This is unstable, thus optional
   return dispatcher.useCacheRefresh();
 }
 
 export function use<T>(usable: Usable<T>): T {
   const dispatcher = resolveDispatcher();
-  // $FlowFixMe This is unstable, thus optional
   return dispatcher.use(usable);
 }
 
-export function useMemoCache(size: number): Array<any> {
+export function useMemoCache(size: number): Array<mixed> {
   const dispatcher = resolveDispatcher();
-  // $FlowFixMe This is unstable, thus optional
+  // $FlowFixMe[not-a-function] This is unstable, thus optional
   return dispatcher.useMemoCache(size);
+}
+
+export function useEffectEvent<Args, F: (...Array<Args>) => mixed>(
+  callback: F,
+): F {
+  const dispatcher = resolveDispatcher();
+  // $FlowFixMe[not-a-function] This is unstable, thus optional
+  return dispatcher.useEffectEvent(callback);
+}
+
+export function useOptimistic<S, A>(
+  passthrough: S,
+  reducer: ?(S, A) => S,
+): [S, (A) => void] {
+  const dispatcher = resolveDispatcher();
+  return dispatcher.useOptimistic(passthrough, reducer);
+}
+
+export function useActionState<S, P>(
+  action: (Awaited<S>, P) => S,
+  initialState: Awaited<S>,
+  permalink?: string,
+): [Awaited<S>, (P) => void, boolean] {
+  const dispatcher = resolveDispatcher();
+  return dispatcher.useActionState(action, initialState, permalink);
 }

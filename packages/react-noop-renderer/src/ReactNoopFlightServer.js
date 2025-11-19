@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,16 +14,20 @@
  * environment.
  */
 
-import type {ReactModel} from 'react-server/src/ReactFlightServer';
-import type {ServerContextJSONValue} from 'shared/ReactTypes';
+import type {ReactClientValue} from 'react-server/src/ReactFlightServer';
 
 import {saveModule} from 'react-noop-renderer/flight-modules';
 
 import ReactFlightServer from 'react-server/flight';
 
-type Destination = Array<string>;
+type Destination = Array<Uint8Array>;
+
+const textEncoder = new TextEncoder();
 
 const ReactNoopFlightServer = ReactFlightServer({
+  scheduleMicrotask(callback: () => void) {
+    callback();
+  },
   scheduleWork(callback: () => void) {
     callback();
   },
@@ -39,19 +43,22 @@ const ReactNoopFlightServer = ReactFlightServer({
   close(destination: Destination): void {},
   closeWithError(destination: Destination, error: mixed): void {},
   flushBuffered(destination: Destination): void {},
-  stringToChunk(content: string): string {
-    return content;
+  stringToChunk(content: string): Uint8Array {
+    return textEncoder.encode(content);
   },
-  stringToPrecomputedChunk(content: string): string {
-    return content;
+  stringToPrecomputedChunk(content: string): Uint8Array {
+    return textEncoder.encode(content);
   },
-  isModuleReference(reference: Object): boolean {
-    return reference.$$typeof === Symbol.for('react.module.reference');
+  isClientReference(reference: Object): boolean {
+    return reference.$$typeof === Symbol.for('react.client.reference');
   },
-  getModuleKey(reference: Object): Object {
+  isServerReference(reference: Object): boolean {
+    return reference.$$typeof === Symbol.for('react.server.reference');
+  },
+  getClientReferenceKey(reference: Object): Object {
     return reference;
   },
-  resolveModuleMetaData(
+  resolveClientReferenceMetadata(
     config: void,
     reference: {$$typeof: symbol, value: any},
   ) {
@@ -60,21 +67,44 @@ const ReactNoopFlightServer = ReactFlightServer({
 });
 
 type Options = {
-  onError?: (error: mixed) => void,
-  context?: Array<[string, ServerContextJSONValue]>,
+  environmentName?: string | (() => string),
+  filterStackFrame?: (url: string, functionName: string) => boolean,
   identifierPrefix?: string,
+  signal?: AbortSignal,
+  debugChannel?: {onMessage?: (message: string) => void},
+  onError?: (error: mixed) => void,
 };
 
-function render(model: ReactModel, options?: Options): Destination {
+function render(model: ReactClientValue, options?: Options): Destination {
   const destination: Destination = [];
   const bundlerConfig = undefined;
   const request = ReactNoopFlightServer.createRequest(
     model,
     bundlerConfig,
     options ? options.onError : undefined,
-    options ? options.context : undefined,
     options ? options.identifierPrefix : undefined,
+    undefined,
+    __DEV__ && options ? options.environmentName : undefined,
+    __DEV__ && options ? options.filterStackFrame : undefined,
+    __DEV__ && options && options.debugChannel !== undefined,
   );
+  const signal = options ? options.signal : undefined;
+  if (signal) {
+    if (signal.aborted) {
+      ReactNoopFlightServer.abort(request, (signal: any).reason);
+    } else {
+      const listener = () => {
+        ReactNoopFlightServer.abort(request, (signal: any).reason);
+        signal.removeEventListener('abort', listener);
+      };
+      signal.addEventListener('abort', listener);
+    }
+  }
+  if (__DEV__ && options && options.debugChannel !== undefined) {
+    options.debugChannel.onMessage = message => {
+      ReactNoopFlightServer.resolveDebugMessage(request, message);
+    };
+  }
   ReactNoopFlightServer.startWork(request);
   ReactNoopFlightServer.startFlowing(request, destination);
   return destination;

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,11 +7,13 @@
  * @flow
  */
 
-declare function isArray(a: mixed): boolean %checks(Array.isArray(a));
+declare function isArray<T>(
+  v: T,
+  // eslint-disable-next-line
+): v is T extends $ReadOnlyArray<mixed> ? T : empty;
 
 const isArrayImpl = Array.isArray;
 
-// eslint-disable-next-line no-redeclare
 function isArray(a: mixed): boolean {
   return isArrayImpl(a);
 }

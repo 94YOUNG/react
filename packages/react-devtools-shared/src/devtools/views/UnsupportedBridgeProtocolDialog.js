@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -16,6 +16,7 @@ import Button from './Button';
 import ButtonIcon from './ButtonIcon';
 import {copy} from 'clipboard-js';
 import styles from './UnsupportedBridgeProtocolDialog.css';
+import {withPermissionsCheck} from 'react-devtools-shared/src/frontend/utils/withPermissionsCheck';
 
 import type {BridgeProtocol} from 'react-devtools-shared/src/bridge';
 
@@ -24,7 +25,7 @@ const INSTRUCTIONS_FB_URL =
   'https://fb.me/devtools-unsupported-bridge-protocol';
 const MODAL_DIALOG_ID = 'UnsupportedBridgeProtocolDialog';
 
-export default function UnsupportedBridgeProtocolDialog(_: {}) {
+export default function UnsupportedBridgeProtocolDialog(_: {}): null {
   const {dialogs, dispatch} = useContext(ModalDialogContext);
   const store = useContext(StoreContext);
 
@@ -82,7 +83,10 @@ function DialogContent({
         <pre className={styles.NpmCommand}>
           {upgradeInstructions}
           <Button
-            onClick={() => copy(upgradeInstructions)}
+            onClick={withPermissionsCheck(
+              {permissions: ['clipboardWrite']},
+              () => copy(upgradeInstructions),
+            )}
             title="Copy upgrade command to clipboard">
             <ButtonIcon type="copy" />
           </Button>
@@ -99,7 +103,10 @@ function DialogContent({
         <pre className={styles.NpmCommand}>
           {downgradeInstructions}
           <Button
-            onClick={() => copy(downgradeInstructions)}
+            onClick={withPermissionsCheck(
+              {permissions: ['clipboardWrite']},
+              () => copy(downgradeInstructions),
+            )}
             title="Copy downgrade command to clipboard">
             <ButtonIcon type="copy" />
           </Button>

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -24,6 +24,9 @@ export type LoggerEvent =
     }
   | {
       +event_name: 'selected-profiler-tab',
+    }
+  | {
+      +event_name: 'selected-suspense-tab',
     }
   | {
       +event_name: 'load-hook-names',
@@ -74,7 +77,7 @@ export const logEvent: LogFunction =
       }
     : function logEvent() {};
 
-export const registerEventLogger =
+export const registerEventLogger: (logFunction: LogFunction) => () => void =
   enableLogger === true
     ? function registerEventLogger(logFunction: LogFunction): () => void {
         if (enableLogger) {

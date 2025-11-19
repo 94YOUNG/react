@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,7 +9,6 @@
 
 import * as React from 'react';
 import {useContext, useMemo, useRef, useState} from 'react';
-import {unstable_batchedUpdates as batchedUpdates} from 'react-dom';
 import {copy} from 'clipboard-js';
 import {
   BridgeContext,
@@ -21,6 +20,7 @@ import {serializeDataForCopy} from '../../utils';
 import AutoSizeInput from './AutoSizeInput';
 import styles from './StyleEditor.css';
 import {sanitizeForParse} from '../../../utils';
+import {withPermissionsCheck} from 'react-devtools-shared/src/frontend/utils/withPermissionsCheck';
 
 import type {Style} from './types';
 
@@ -32,7 +32,7 @@ type Props = {
 type ChangeAttributeFn = (oldName: string, newName: string, value: any) => void;
 type ChangeValueFn = (name: string, value: any) => void;
 
-export default function StyleEditor({id, style}: Props) {
+export default function StyleEditor({id, style}: Props): React.Node {
   const bridge = useContext(BridgeContext);
   const store = useContext(StoreContext);
 
@@ -63,7 +63,10 @@ export default function StyleEditor({id, style}: Props) {
 
   const keys = useMemo(() => Array.from(Object.keys(style)), [style]);
 
-  const handleCopy = () => copy(serializeDataForCopy(style));
+  const handleCopy = withPermissionsCheck(
+    {permissions: ['clipboardWrite']},
+    () => copy(serializeDataForCopy(style)),
+  );
 
   return (
     <div className={styles.StyleEditor}>
@@ -78,7 +81,7 @@ export default function StyleEditor({id, style}: Props) {
       {keys.length > 0 &&
         keys.map(attribute => (
           <Row
-            key={attribute}
+            key={`${attribute}/${style[attribute]}`}
             attribute={attribute}
             changeAttribute={changeAttribute}
             changeValue={changeValue}
@@ -171,18 +174,18 @@ function Row({
   const [isAttributeValid, setIsAttributeValid] = useState(true);
   const [isValueValid, setIsValueValid] = useState(true);
 
+  // $FlowFixMe[missing-local-annot]
   const validateAndSetLocalAttribute = newAttribute => {
     const isValid =
       newAttribute === '' ||
       validAttributes === null ||
       validAttributes.indexOf(newAttribute) >= 0;
 
-    batchedUpdates(() => {
-      setLocalAttribute(newAttribute);
-      setIsAttributeValid(isValid);
-    });
+    setLocalAttribute(newAttribute);
+    setIsAttributeValid(isValid);
   };
 
+  // $FlowFixMe[missing-local-annot]
   const validateAndSetLocalValue = newValue => {
     let isValid = false;
     try {
@@ -190,10 +193,8 @@ function Row({
       isValid = true;
     } catch (error) {}
 
-    batchedUpdates(() => {
-      setLocalValue(newValue);
-      setIsValueValid(isValid);
-    });
+    setLocalValue(newValue);
+    setIsValueValid(isValid);
   };
 
   const resetAttribute = () => {
@@ -262,6 +263,7 @@ function Field({
   placeholder,
   value,
 }: FieldProps) {
+  // $FlowFixMe[missing-local-annot]
   const onKeyDown = event => {
     switch (event.key) {
       case 'Enter':
@@ -285,7 +287,7 @@ function Field({
     <AutoSizeInput
       className={`${className} ${styles.Input}`}
       onBlur={onSubmit}
-      onChange={event => onChange(event.target.value)}
+      onChange={(event: $FlowFixMe) => onChange(event.target.value)}
       onKeyDown={onKeyDown}
       placeholder={placeholder}
       value={value}

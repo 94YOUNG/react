@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -31,7 +31,7 @@ export default function ReportNewIssue({
   callStack,
   componentStack,
   errorMessage,
-}: Props) {
+}: Props): React.Node {
   let bugURL = process.env.GITHUB_URL;
   if (!bugURL) {
     return null;
@@ -63,8 +63,7 @@ export default function ReportNewIssue({
         className={styles.ReportLink}
         href={bugURL}
         rel="noopener noreferrer"
-        target="_blank"
-        title="Report bug">
+        target="_blank">
         Report this issue
       </a>
       <div className={styles.ReproSteps}>

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -51,12 +51,16 @@ export function isInternalModule(
       const [startStackFrame, stopStackFrame] = ranges[i];
 
       const isAfterStart =
+        // $FlowFixMe[invalid-compare] -- TODO: Revealed when adding types to error-stack-parser
         locationLine > startStackFrame.lineNumber ||
         (locationLine === startStackFrame.lineNumber &&
+          // $FlowFixMe[invalid-compare]
           locationColumn >= startStackFrame.columnNumber);
       const isBeforeStop =
+        // $FlowFixMe[invalid-compare]
         locationLine < stopStackFrame.lineNumber ||
         (locationLine === stopStackFrame.lineNumber &&
+          // $FlowFixMe[invalid-compare]
           locationColumn <= stopStackFrame.columnNumber);
 
       if (isAfterStart && isBeforeStop) {

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,41 +8,44 @@
  */
 
 import EventEmitter from '../events';
-import throttle from 'lodash.throttle';
 import {
   SESSION_STORAGE_LAST_SELECTION_KEY,
-  SESSION_STORAGE_RELOAD_AND_PROFILE_KEY,
-  SESSION_STORAGE_RECORD_CHANGE_DESCRIPTIONS_KEY,
+  UNKNOWN_SUSPENDERS_NONE,
   __DEBUG__,
 } from '../constants';
-import {
-  sessionStorageGetItem,
-  sessionStorageRemoveItem,
-  sessionStorageSetItem,
-} from 'react-devtools-shared/src/storage';
 import setupHighlighter from './views/Highlighter';
 import {
   initialize as setupTraceUpdates,
   toggleEnabled as setTraceUpdatesEnabled,
 } from './views/TraceUpdates';
-import {patch as patchConsole} from './console';
 import {currentBridgeProtocol} from 'react-devtools-shared/src/bridge';
 
 import type {BackendBridge} from 'react-devtools-shared/src/bridge';
 import type {
   InstanceAndStyle,
-  NativeType,
+  HostInstance,
   OwnersList,
   PathFrame,
   PathMatch,
   RendererID,
   RendererInterface,
+  DevToolsHookSettings,
+  InspectedElement,
 } from './types';
-import type {ComponentFilter} from '../types';
-import {isSynchronousXHRSupported} from './utils';
-import type {BrowserTheme} from 'react-devtools-shared/src/devtools/views/DevTools';
+import type {
+  ComponentFilter,
+  DehydratedData,
+  ElementType,
+} from 'react-devtools-shared/src/frontend/types';
+import type {GroupItem} from './views/TraceUpdates/canvas';
+import {gte, isReactNativeEnvironment} from './utils';
+import {
+  sessionStorageGetItem,
+  sessionStorageRemoveItem,
+  sessionStorageSetItem,
+} from '../storage';
 
-const debug = (methodName, ...args) => {
+const debug = (methodName: string, ...args: Array<string>) => {
   if (__DEBUG__) {
     console.log(
       `%cAgent %c${methodName}`,
@@ -76,6 +79,13 @@ type InspectElementParams = {
   id: number,
   path: Array<string | number> | null,
   rendererID: number,
+  requestID: number,
+};
+
+type InspectScreenParams = {
+  forceFullData: boolean,
+  id: number,
+  path: Array<string | number> | null,
   requestID: number,
 };
 
@@ -136,42 +146,156 @@ type OverrideSuspenseParams = {
   forceFallback: boolean,
 };
 
+type OverrideSuspenseMilestoneParams = {
+  suspendedSet: Array<number>,
+};
+
 type PersistedSelection = {
   rendererID: number,
   path: Array<PathFrame>,
 };
 
+function createEmptyInspectedScreen(
+  arbitraryRootID: number,
+  type: ElementType,
+): InspectedElement {
+  const suspendedBy: DehydratedData = {
+    cleaned: [],
+    data: [],
+    unserializable: [],
+  };
+  return {
+    // invariants
+    id: arbitraryRootID,
+    type: type,
+    // Properties we merge
+    isErrored: false,
+    errors: [],
+    warnings: [],
+    suspendedBy,
+    suspendedByRange: null,
+    // TODO: How to merge these?
+    unknownSuspenders: UNKNOWN_SUSPENDERS_NONE,
+    // Properties where merging doesn't make sense so we ignore them entirely in the UI
+    rootType: null,
+    plugins: {stylex: null},
+    nativeTag: null,
+    env: null,
+    source: null,
+    stack: null,
+    rendererPackageName: null,
+    rendererVersion: null,
+    // These don't make sense for a Root. They're just bottom values.
+    key: null,
+    canEditFunctionProps: false,
+    canEditHooks: false,
+    canEditFunctionPropsDeletePaths: false,
+    canEditFunctionPropsRenamePaths: false,
+    canEditHooksAndDeletePaths: false,
+    canEditHooksAndRenamePaths: false,
+    canToggleError: false,
+    canToggleSuspense: false,
+    isSuspended: false,
+    hasLegacyContext: false,
+    context: null,
+    hooks: null,
+    props: null,
+    state: null,
+    owners: null,
+  };
+}
+
+function mergeRoots(
+  left: InspectedElement,
+  right: InspectedElement,
+  suspendedByOffset: number,
+): void {
+  const leftSuspendedByRange = left.suspendedByRange;
+  const rightSuspendedByRange = right.suspendedByRange;
+
+  if (right.isErrored) {
+    left.isErrored = true;
+  }
+  for (let i = 0; i < right.errors.length; i++) {
+    left.errors.push(right.errors[i]);
+  }
+  for (let i = 0; i < right.warnings.length; i++) {
+    left.warnings.push(right.warnings[i]);
+  }
+
+  const leftSuspendedBy: DehydratedData = left.suspendedBy;
+  const {data, cleaned, unserializable} = (right.suspendedBy: DehydratedData);
+  const leftSuspendedByData = ((leftSuspendedBy.data: any): Array<mixed>);
+  const rightSuspendedByData = ((data: any): Array<mixed>);
+  for (let i = 0; i < rightSuspendedByData.length; i++) {
+    leftSuspendedByData.push(rightSuspendedByData[i]);
+  }
+  for (let i = 0; i < cleaned.length; i++) {
+    leftSuspendedBy.cleaned.push(
+      [suspendedByOffset + cleaned[i][0]].concat(cleaned[i].slice(1)),
+    );
+  }
+  for (let i = 0; i < unserializable.length; i++) {
+    leftSuspendedBy.unserializable.push(
+      [suspendedByOffset + unserializable[i][0]].concat(
+        unserializable[i].slice(1),
+      ),
+    );
+  }
+
+  if (rightSuspendedByRange !== null) {
+    if (leftSuspendedByRange === null) {
+      left.suspendedByRange = [
+        rightSuspendedByRange[0],
+        rightSuspendedByRange[1],
+      ];
+    } else {
+      if (rightSuspendedByRange[0] < leftSuspendedByRange[0]) {
+        leftSuspendedByRange[0] = rightSuspendedByRange[0];
+      }
+      if (rightSuspendedByRange[1] > leftSuspendedByRange[1]) {
+        leftSuspendedByRange[1] = rightSuspendedByRange[1];
+      }
+    }
+  }
+}
+
 export default class Agent extends EventEmitter<{
   hideNativeHighlight: [],
-  showNativeHighlight: [NativeType],
+  showNativeHighlight: [HostInstance],
   startInspectingNative: [],
   stopInspectingNative: [],
   shutdown: [],
-  traceUpdates: [Set<NativeType>],
+  traceUpdates: [Set<HostInstance>],
+  drawTraceUpdates: [Array<HostInstance>],
+  drawGroupedTraceUpdatesWithNames: [Array<Array<GroupItem>>],
+  disableTraceUpdates: [],
+  getIfHasUnsupportedRendererVersion: [],
+  updateHookSettings: [$ReadOnly<DevToolsHookSettings>],
+  getHookSettings: [],
 }> {
   _bridge: BackendBridge;
   _isProfiling: boolean = false;
-  _recordChangeDescriptions: boolean = false;
   _rendererInterfaces: {[key: RendererID]: RendererInterface, ...} = {};
   _persistedSelection: PersistedSelection | null = null;
   _persistedSelectionMatch: PathMatch | null = null;
   _traceUpdatesEnabled: boolean = false;
+  _onReloadAndProfile:
+    | ((recordChangeDescriptions: boolean, recordTimeline: boolean) => void)
+    | void;
 
-  constructor(bridge: BackendBridge) {
+  constructor(
+    bridge: BackendBridge,
+    isProfiling: boolean = false,
+    onReloadAndProfile?: (
+      recordChangeDescriptions: boolean,
+      recordTimeline: boolean,
+    ) => void,
+  ) {
     super();
 
-    if (
-      sessionStorageGetItem(SESSION_STORAGE_RELOAD_AND_PROFILE_KEY) === 'true'
-    ) {
-      this._recordChangeDescriptions =
-        sessionStorageGetItem(
-          SESSION_STORAGE_RECORD_CHANGE_DESCRIPTIONS_KEY,
-        ) === 'true';
-      this._isProfiling = true;
-
-      sessionStorageRemoveItem(SESSION_STORAGE_RECORD_CHANGE_DESCRIPTIONS_KEY);
-      sessionStorageRemoveItem(SESSION_STORAGE_RELOAD_AND_PROFILE_KEY);
-    }
+    this._isProfiling = isProfiling;
+    this._onReloadAndProfile = onReloadAndProfile;
 
     const persistedSelectionString = sessionStorageGetItem(
       SESSION_STORAGE_LAST_SELECTION_KEY,
@@ -183,8 +307,11 @@ export default class Agent extends EventEmitter<{
     this._bridge = bridge;
 
     bridge.addListener('clearErrorsAndWarnings', this.clearErrorsAndWarnings);
-    bridge.addListener('clearErrorsForFiberID', this.clearErrorsForFiberID);
-    bridge.addListener('clearWarningsForFiberID', this.clearWarningsForFiberID);
+    bridge.addListener('clearErrorsForElementID', this.clearErrorsForElementID);
+    bridge.addListener(
+      'clearWarningsForElementID',
+      this.clearWarningsForElementID,
+    );
     bridge.addListener('copyElementPath', this.copyElementPath);
     bridge.addListener('deletePath', this.deletePath);
     bridge.addListener('getBackendVersion', this.getBackendVersion);
@@ -193,9 +320,14 @@ export default class Agent extends EventEmitter<{
     bridge.addListener('getProfilingStatus', this.getProfilingStatus);
     bridge.addListener('getOwnersList', this.getOwnersList);
     bridge.addListener('inspectElement', this.inspectElement);
+    bridge.addListener('inspectScreen', this.inspectScreen);
     bridge.addListener('logElementToConsole', this.logElementToConsole);
     bridge.addListener('overrideError', this.overrideError);
     bridge.addListener('overrideSuspense', this.overrideSuspense);
+    bridge.addListener(
+      'overrideSuspenseMilestone',
+      this.overrideSuspenseMilestone,
+    );
     bridge.addListener('overrideValueAtPath', this.overrideValueAtPath);
     bridge.addListener('reloadAndProfile', this.reloadAndProfile);
     bridge.addListener('renamePath', this.renamePath);
@@ -204,17 +336,20 @@ export default class Agent extends EventEmitter<{
     bridge.addListener('stopProfiling', this.stopProfiling);
     bridge.addListener('storeAsGlobal', this.storeAsGlobal);
     bridge.addListener(
-      'syncSelectionFromNativeElementsPanel',
-      this.syncSelectionFromNativeElementsPanel,
+      'syncSelectionFromBuiltinElementsPanel',
+      this.syncSelectionFromBuiltinElementsPanel,
     );
     bridge.addListener('shutdown', this.shutdown);
-    bridge.addListener(
-      'updateConsolePatchSettings',
-      this.updateConsolePatchSettings,
-    );
+
+    bridge.addListener('updateHookSettings', this.updateHookSettings);
+    bridge.addListener('getHookSettings', this.getHookSettings);
+
     bridge.addListener('updateComponentFilters', this.updateComponentFilters);
-    bridge.addListener('viewAttributeSource', this.viewAttributeSource);
-    bridge.addListener('viewElementSource', this.viewElementSource);
+    bridge.addListener('getEnvironmentNames', this.getEnvironmentNames);
+    bridge.addListener(
+      'getIfHasUnsupportedRendererVersion',
+      this.getIfHasUnsupportedRendererVersion,
+    );
 
     // Temporarily support older standalone front-ends sending commands to newer embedded backends.
     // We do this because React Native embeds the React DevTools backend,
@@ -224,37 +359,24 @@ export default class Agent extends EventEmitter<{
     bridge.addListener('overrideProps', this.overrideProps);
     bridge.addListener('overrideState', this.overrideState);
 
+    setupHighlighter(bridge, this);
+    setupTraceUpdates(this);
+
+    // By this time, Store should already be initialized and intercept events
+    bridge.send('backendInitialized');
+
     if (this._isProfiling) {
       bridge.send('profilingStatus', true);
     }
-
-    // Send the Bridge protocol and backend versions, after initialization, in case the frontend has already requested it.
-    // The Store may be instantiated beore the agent.
-    const version = process.env.DEVTOOLS_VERSION;
-    if (version) {
-      this._bridge.send('backendVersion', version);
-    }
-    this._bridge.send('bridgeProtocol', currentBridgeProtocol);
-
-    // Notify the frontend if the backend supports the Storage API (e.g. localStorage).
-    // If not, features like reload-and-profile will not work correctly and must be disabled.
-    let isBackendStorageAPISupported = false;
-    try {
-      localStorage.getItem('test');
-      isBackendStorageAPISupported = true;
-    } catch (error) {}
-    bridge.send('isBackendStorageAPISupported', isBackendStorageAPISupported);
-    bridge.send('isSynchronousXHRSupported', isSynchronousXHRSupported());
-
-    setupHighlighter(bridge, this);
-    setupTraceUpdates(this);
   }
 
   get rendererInterfaces(): {[key: RendererID]: RendererInterface, ...} {
     return this._rendererInterfaces;
   }
 
-  clearErrorsAndWarnings = ({rendererID}: {rendererID: RendererID}) => {
+  clearErrorsAndWarnings: ({rendererID: RendererID}) => void = ({
+    rendererID,
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}"`);
@@ -263,34 +385,56 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  clearErrorsForFiberID = ({id, rendererID}: ElementAndRendererID) => {
+  clearErrorsForElementID: ElementAndRendererID => void = ({
+    id,
+    rendererID,
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}"`);
     } else {
-      renderer.clearErrorsForFiberID(id);
+      renderer.clearErrorsForElementID(id);
     }
   };
 
-  clearWarningsForFiberID = ({id, rendererID}: ElementAndRendererID) => {
+  clearWarningsForElementID: ElementAndRendererID => void = ({
+    id,
+    rendererID,
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}"`);
     } else {
-      renderer.clearWarningsForFiberID(id);
+      renderer.clearWarningsForElementID(id);
     }
   };
 
-  copyElementPath = ({id, path, rendererID}: CopyElementParams) => {
+  copyElementPath: CopyElementParams => void = ({
+    id,
+    path,
+    rendererID,
+  }: CopyElementParams) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
     } else {
-      renderer.copyElementPath(id, path);
+      const value = renderer.getSerializedElementValueByPath(id, path);
+
+      if (value != null) {
+        this._bridge.send('saveToClipboard', value);
+      } else {
+        console.warn(`Unable to obtain serialized value for element "${id}"`);
+      }
     }
   };
 
-  deletePath = ({hookID, id, path, rendererID, type}: DeletePathParams) => {
+  deletePath: DeletePathParams => void = ({
+    hookID,
+    id,
+    path,
+    rendererID,
+    type,
+  }: DeletePathParams) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -311,51 +455,106 @@ export default class Agent extends EventEmitter<{
     return renderer.getInstanceAndStyle(id);
   }
 
-  getBestMatchingRendererInterface(node: Object): RendererInterface | null {
-    let bestMatch = null;
-    for (const rendererID in this._rendererInterfaces) {
-      const renderer = ((this._rendererInterfaces[
-        (rendererID: any)
-      ]: any): RendererInterface);
-      const fiber = renderer.getFiberForNative(node);
-      if (fiber !== null) {
-        // check if fiber.stateNode is matching the original hostInstance
-        if (fiber.stateNode === node) {
-          return renderer;
-        } else if (bestMatch === null) {
-          bestMatch = renderer;
+  getIDForHostInstance(
+    target: HostInstance,
+    onlySuspenseNodes?: boolean,
+  ): null | {id: number, rendererID: number} {
+    if (isReactNativeEnvironment() || typeof target.nodeType !== 'number') {
+      // In React Native or non-DOM we simply pick any renderer that has a match.
+      for (const rendererID in this._rendererInterfaces) {
+        const renderer = ((this._rendererInterfaces[
+          (rendererID: any)
+        ]: any): RendererInterface);
+        try {
+          const id = onlySuspenseNodes
+            ? renderer.getSuspenseNodeIDForHostInstance(target)
+            : renderer.getElementIDForHostInstance(target);
+          if (id !== null) {
+            return {
+              id: id,
+              rendererID: +rendererID,
+            };
+          }
+        } catch (error) {
+          // Some old React versions might throw if they can't find a match.
+          // If so we should ignore it...
         }
       }
+      return null;
+    } else {
+      // In the DOM we use a smarter mechanism to find the deepest a DOM node
+      // that is registered if there isn't an exact match.
+      let bestMatch: null | Element = null;
+      let bestRenderer: null | RendererInterface = null;
+      let bestRendererID: number = 0;
+      // Find the nearest ancestor which is mounted by a React.
+      for (const rendererID in this._rendererInterfaces) {
+        const renderer = ((this._rendererInterfaces[
+          (rendererID: any)
+        ]: any): RendererInterface);
+        const nearestNode: null | Element = renderer.getNearestMountedDOMNode(
+          (target: any),
+        );
+        if (nearestNode !== null) {
+          if (nearestNode === target) {
+            // Exact match we can exit early.
+            bestMatch = nearestNode;
+            bestRenderer = renderer;
+            bestRendererID = +rendererID;
+            break;
+          }
+          if (bestMatch === null || bestMatch.contains(nearestNode)) {
+            // If this is the first match or the previous match contains the new match,
+            // so the new match is a deeper and therefore better match.
+            bestMatch = nearestNode;
+            bestRenderer = renderer;
+            bestRendererID = +rendererID;
+          }
+        }
+      }
+      if (bestRenderer != null && bestMatch != null) {
+        try {
+          const id = onlySuspenseNodes
+            ? bestRenderer.getSuspenseNodeIDForHostInstance(bestMatch)
+            : bestRenderer.getElementIDForHostInstance(bestMatch);
+          if (id !== null) {
+            return {
+              id,
+              rendererID: bestRendererID,
+            };
+          }
+        } catch (error) {
+          // Some old React versions might throw if they can't find a match.
+          // If so we should ignore it...
+        }
+      }
+      return null;
     }
-    // if an exact match is not found, return the first valid renderer as fallback
-    return bestMatch;
   }
 
-  getIDForNode(node: Object): number | null {
-    const rendererInterface = this.getBestMatchingRendererInterface(node);
-    if (rendererInterface != null) {
-      try {
-        return rendererInterface.getFiberIDForNative(node, true);
-      } catch (error) {
-        // Some old React versions might throw if they can't find a match.
-        // If so we should ignore it...
-      }
+  getComponentNameForHostInstance(target: HostInstance): string | null {
+    const match = this.getIDForHostInstance(target);
+    if (match !== null) {
+      const renderer = ((this._rendererInterfaces[
+        (match.rendererID: any)
+      ]: any): RendererInterface);
+      return renderer.getDisplayNameForElementID(match.id);
     }
     return null;
   }
 
-  getBackendVersion = () => {
+  getBackendVersion: () => void = () => {
     const version = process.env.DEVTOOLS_VERSION;
     if (version) {
       this._bridge.send('backendVersion', version);
     }
   };
 
-  getBridgeProtocol = () => {
+  getBridgeProtocol: () => void = () => {
     this._bridge.send('bridgeProtocol', currentBridgeProtocol);
   };
 
-  getProfilingData = ({rendererID}: {rendererID: RendererID}) => {
+  getProfilingData: ({rendererID: RendererID}) => void = ({rendererID}) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}"`);
@@ -364,11 +563,11 @@ export default class Agent extends EventEmitter<{
     this._bridge.send('profilingData', renderer.getProfilingData());
   };
 
-  getProfilingStatus = () => {
+  getProfilingStatus: () => void = () => {
     this._bridge.send('profilingStatus', this._isProfiling);
   };
 
-  getOwnersList = ({id, rendererID}: ElementAndRendererID) => {
+  getOwnersList: ElementAndRendererID => void = ({id, rendererID}) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -378,13 +577,13 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  inspectElement = ({
+  inspectElement: InspectElementParams => void = ({
     forceFullData,
     id,
     path,
     rendererID,
     requestID,
-  }: InspectElementParams) => {
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -403,18 +602,156 @@ export default class Agent extends EventEmitter<{
         this._persistedSelection = null;
         this._persistedSelectionMatch = null;
         renderer.setTrackedPath(null);
-        this._throttledPersistSelection(rendererID, id);
+        // Throttle persisting the selection.
+        this._lastSelectedElementID = id;
+        this._lastSelectedRendererID = rendererID;
+        if (!this._persistSelectionTimerScheduled) {
+          this._persistSelectionTimerScheduled = true;
+          setTimeout(this._persistSelection, 1000);
+        }
       }
 
       // TODO: If there was a way to change the selected DOM element
-      // in native Elements tab without forcing a switch to it, we'd do it here.
+      // in built-in Elements tab without forcing a switch to it, we'd do it here.
       // For now, it doesn't seem like there is a way to do that:
       // https://github.com/bvaughn/react-devtools-experimental/issues/102
       // (Setting $0 doesn't work, and calling inspect() switches the tab.)
     }
   };
 
-  logElementToConsole = ({id, rendererID}: ElementAndRendererID) => {
+  inspectScreen: InspectScreenParams => void = ({
+    requestID,
+    id,
+    forceFullData,
+    path: screenPath,
+  }) => {
+    let inspectedScreen: InspectedElement | null = null;
+    let found = false;
+    // the suspendedBy index will be from the previously merged roots.
+    // We need to keep track of how many suspendedBy we've already seen to know
+    // to which renderer the index belongs.
+    let suspendedByOffset = 0;
+    let suspendedByPathIndex: number | null = null;
+    // The path to hydrate for a specific renderer
+    let rendererPath: InspectElementParams['path'] = null;
+    if (screenPath !== null && screenPath.length > 1) {
+      const secondaryCategory = screenPath[0];
+      if (secondaryCategory !== 'suspendedBy') {
+        throw new Error(
+          'Only hydrating suspendedBy paths is supported. This is a bug.',
+        );
+      }
+      if (typeof screenPath[1] !== 'number') {
+        throw new Error(
+          `Expected suspendedBy index to be a number. Received '${screenPath[1]}' instead. This is a bug.`,
+        );
+      }
+      suspendedByPathIndex = screenPath[1];
+      rendererPath = screenPath.slice(2);
+    }
+
+    for (const rendererID in this._rendererInterfaces) {
+      const renderer = ((this._rendererInterfaces[
+        (rendererID: any)
+      ]: any): RendererInterface);
+      let path: InspectElementParams['path'] = null;
+      if (suspendedByPathIndex !== null && rendererPath !== null) {
+        const suspendedByPathRendererIndex =
+          suspendedByPathIndex - suspendedByOffset;
+        const rendererHasRequestedSuspendedByPath =
+          renderer.getElementAttributeByPath(id, [
+            'suspendedBy',
+            suspendedByPathRendererIndex,
+          ]) !== undefined;
+        if (rendererHasRequestedSuspendedByPath) {
+          path = ['suspendedBy', suspendedByPathRendererIndex].concat(
+            rendererPath,
+          );
+        }
+      }
+
+      const inspectedRootsPayload = renderer.inspectElement(
+        requestID,
+        id,
+        path,
+        forceFullData,
+      );
+      switch (inspectedRootsPayload.type) {
+        case 'hydrated-path':
+          // The path will be relative to the Roots of this renderer. We adjust it
+          // to be relative to all Roots of this implementation.
+          inspectedRootsPayload.path[1] += suspendedByOffset;
+          // TODO: Hydration logic is flawed since the Frontend path is not based
+          // on the original backend data but rather its own representation of it (e.g. due to reorder).
+          // So we can receive null here instead when hydration fails
+          if (inspectedRootsPayload.value !== null) {
+            for (
+              let i = 0;
+              i < inspectedRootsPayload.value.cleaned.length;
+              i++
+            ) {
+              inspectedRootsPayload.value.cleaned[i][1] += suspendedByOffset;
+            }
+          }
+          this._bridge.send('inspectedScreen', inspectedRootsPayload);
+          // If we hydrated a path, it must've been in a specific renderer so we can stop here.
+          return;
+        case 'full-data':
+          const inspectedRoots = inspectedRootsPayload.value;
+          if (inspectedScreen === null) {
+            inspectedScreen = createEmptyInspectedScreen(
+              inspectedRoots.id,
+              inspectedRoots.type,
+            );
+          }
+          mergeRoots(inspectedScreen, inspectedRoots, suspendedByOffset);
+          const dehydratedSuspendedBy: DehydratedData =
+            inspectedRoots.suspendedBy;
+          const suspendedBy = ((dehydratedSuspendedBy.data: any): Array<mixed>);
+          suspendedByOffset += suspendedBy.length;
+          found = true;
+          break;
+        case 'no-change':
+          found = true;
+          const rootsSuspendedBy: Array<mixed> =
+            (renderer.getElementAttributeByPath(id, ['suspendedBy']): any);
+          suspendedByOffset += rootsSuspendedBy.length;
+          break;
+        case 'not-found':
+          break;
+        case 'error':
+          // bail out and show the error
+          // TODO: aggregate errors
+          this._bridge.send('inspectedScreen', inspectedRootsPayload);
+          return;
+      }
+    }
+
+    if (inspectedScreen === null) {
+      if (found) {
+        this._bridge.send('inspectedScreen', {
+          type: 'no-change',
+          responseID: requestID,
+          id,
+        });
+      } else {
+        this._bridge.send('inspectedScreen', {
+          type: 'not-found',
+          responseID: requestID,
+          id,
+        });
+      }
+    } else {
+      this._bridge.send('inspectedScreen', {
+        type: 'full-data',
+        responseID: requestID,
+        id,
+        value: inspectedScreen,
+      });
+    }
+  };
+
+  logElementToConsole: ElementAndRendererID => void = ({id, rendererID}) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -423,7 +760,11 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  overrideError = ({id, rendererID, forceError}: OverrideErrorParams) => {
+  overrideError: OverrideErrorParams => void = ({
+    id,
+    rendererID,
+    forceError,
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -432,11 +773,11 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  overrideSuspense = ({
+  overrideSuspense: OverrideSuspenseParams => void = ({
     id,
     rendererID,
     forceFallback,
-  }: OverrideSuspenseParams) => {
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -445,14 +786,27 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  overrideValueAtPath = ({
+  overrideSuspenseMilestone: OverrideSuspenseMilestoneParams => void = ({
+    suspendedSet,
+  }) => {
+    for (const rendererID in this._rendererInterfaces) {
+      const renderer = ((this._rendererInterfaces[
+        (rendererID: any)
+      ]: any): RendererInterface);
+      if (renderer.supportsTogglingSuspense) {
+        renderer.overrideSuspenseMilestone(suspendedSet);
+      }
+    }
+  };
+
+  overrideValueAtPath: OverrideValueAtPathParams => void = ({
     hookID,
     id,
     path,
     rendererID,
     type,
     value,
-  }: OverrideValueAtPathParams) => {
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -463,13 +817,13 @@ export default class Agent extends EventEmitter<{
 
   // Temporarily support older standalone front-ends by forwarding the older message types
   // to the new "overrideValueAtPath" command the backend is now listening to.
-  overrideContext = ({
+  overrideContext: SetInParams => void = ({
     id,
     path,
     rendererID,
     wasForwarded,
     value,
-  }: SetInParams) => {
+  }) => {
     // Don't forward a message that's already been forwarded by the front-end Bridge.
     // We only need to process the override command once!
     if (!wasForwarded) {
@@ -485,14 +839,14 @@ export default class Agent extends EventEmitter<{
 
   // Temporarily support older standalone front-ends by forwarding the older message types
   // to the new "overrideValueAtPath" command the backend is now listening to.
-  overrideHookState = ({
+  overrideHookState: OverrideHookParams => void = ({
     id,
     hookID,
     path,
     rendererID,
     wasForwarded,
     value,
-  }: OverrideHookParams) => {
+  }) => {
     // Don't forward a message that's already been forwarded by the front-end Bridge.
     // We only need to process the override command once!
     if (!wasForwarded) {
@@ -508,13 +862,13 @@ export default class Agent extends EventEmitter<{
 
   // Temporarily support older standalone front-ends by forwarding the older message types
   // to the new "overrideValueAtPath" command the backend is now listening to.
-  overrideProps = ({
+  overrideProps: SetInParams => void = ({
     id,
     path,
     rendererID,
     wasForwarded,
     value,
-  }: SetInParams) => {
+  }) => {
     // Don't forward a message that's already been forwarded by the front-end Bridge.
     // We only need to process the override command once!
     if (!wasForwarded) {
@@ -530,13 +884,13 @@ export default class Agent extends EventEmitter<{
 
   // Temporarily support older standalone front-ends by forwarding the older message types
   // to the new "overrideValueAtPath" command the backend is now listening to.
-  overrideState = ({
+  overrideState: SetInParams => void = ({
     id,
     path,
     rendererID,
     wasForwarded,
     value,
-  }: SetInParams) => {
+  }) => {
     // Don't forward a message that's already been forwarded by the front-end Bridge.
     // We only need to process the override command once!
     if (!wasForwarded) {
@@ -550,12 +904,17 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  reloadAndProfile = (recordChangeDescriptions: boolean) => {
-    sessionStorageSetItem(SESSION_STORAGE_RELOAD_AND_PROFILE_KEY, 'true');
-    sessionStorageSetItem(
-      SESSION_STORAGE_RECORD_CHANGE_DESCRIPTIONS_KEY,
-      recordChangeDescriptions ? 'true' : 'false',
-    );
+  onReloadAndProfileSupportedByHost: () => void = () => {
+    this._bridge.send('isReloadAndProfileSupportedByBackend', true);
+  };
+
+  reloadAndProfile: ({
+    recordChangeDescriptions: boolean,
+    recordTimeline: boolean,
+  }) => void = ({recordChangeDescriptions, recordTimeline}) => {
+    if (typeof this._onReloadAndProfile === 'function') {
+      this._onReloadAndProfile(recordChangeDescriptions, recordTimeline);
+    }
 
     // This code path should only be hit if the shell has explicitly told the Store that it supports profiling.
     // In that case, the shell must also listen for this specific message to know when it needs to reload the app.
@@ -563,14 +922,14 @@ export default class Agent extends EventEmitter<{
     this._bridge.send('reloadAppForProfiling');
   };
 
-  renamePath = ({
+  renamePath: RenamePathParams => void = ({
     hookID,
     id,
     newPath,
     oldPath,
     rendererID,
     type,
-  }: RenamePathParams) => {
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -579,24 +938,30 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  selectNode(target: Object): void {
-    const id = this.getIDForNode(target);
-    if (id !== null) {
-      this._bridge.send('selectFiber', id);
+  selectNode(target: HostInstance): void {
+    const match = this.getIDForHostInstance(target);
+    if (match !== null) {
+      this._bridge.send('selectElement', match.id);
     }
   }
 
-  setRendererInterface(
+  registerRendererInterface(
     rendererID: RendererID,
     rendererInterface: RendererInterface,
   ) {
     this._rendererInterfaces[rendererID] = rendererInterface;
 
-    if (this._isProfiling) {
-      rendererInterface.startProfiling(this._recordChangeDescriptions);
-    }
-
     rendererInterface.setTraceUpdatesEnabled(this._traceUpdatesEnabled);
+
+    const renderer = rendererInterface.renderer;
+    if (renderer !== null) {
+      const devRenderer = renderer.bundleType === 1;
+      const enableSuspenseTab =
+        devRenderer && gte(renderer.version, '19.3.0-canary');
+      if (enableSuspenseTab) {
+        this._bridge.send('enableSuspenseTab');
+      }
+    }
 
     // When the renderer is attached, we need to tell it whether
     // we remember the previous selection that we'd like to restore.
@@ -607,20 +972,21 @@ export default class Agent extends EventEmitter<{
     }
   }
 
-  setTraceUpdatesEnabled = (traceUpdatesEnabled: boolean) => {
-    this._traceUpdatesEnabled = traceUpdatesEnabled;
+  setTraceUpdatesEnabled: (traceUpdatesEnabled: boolean) => void =
+    traceUpdatesEnabled => {
+      this._traceUpdatesEnabled = traceUpdatesEnabled;
 
-    setTraceUpdatesEnabled(traceUpdatesEnabled);
+      setTraceUpdatesEnabled(traceUpdatesEnabled);
 
-    for (const rendererID in this._rendererInterfaces) {
-      const renderer = ((this._rendererInterfaces[
-        (rendererID: any)
-      ]: any): RendererInterface);
-      renderer.setTraceUpdatesEnabled(traceUpdatesEnabled);
-    }
-  };
+      for (const rendererID in this._rendererInterfaces) {
+        const renderer = ((this._rendererInterfaces[
+          (rendererID: any)
+        ]: any): RendererInterface);
+        renderer.setTraceUpdatesEnabled(traceUpdatesEnabled);
+      }
+    };
 
-  syncSelectionFromNativeElementsPanel = () => {
+  syncSelectionFromBuiltinElementsPanel: () => void = () => {
     const target = window.__REACT_DEVTOOLS_GLOBAL_HOOK__.$0;
     if (target == null) {
       return;
@@ -628,26 +994,30 @@ export default class Agent extends EventEmitter<{
     this.selectNode(target);
   };
 
-  shutdown = () => {
+  shutdown: () => void = () => {
     // Clean up the overlay if visible, and associated events.
     this.emit('shutdown');
+
+    this._bridge.removeAllListeners();
+    this.removeAllListeners();
   };
 
-  startProfiling = (recordChangeDescriptions: boolean) => {
-    this._recordChangeDescriptions = recordChangeDescriptions;
+  startProfiling: ({
+    recordChangeDescriptions: boolean,
+    recordTimeline: boolean,
+  }) => void = ({recordChangeDescriptions, recordTimeline}) => {
     this._isProfiling = true;
     for (const rendererID in this._rendererInterfaces) {
       const renderer = ((this._rendererInterfaces[
         (rendererID: any)
       ]: any): RendererInterface);
-      renderer.startProfiling(recordChangeDescriptions);
+      renderer.startProfiling(recordChangeDescriptions, recordTimeline);
     }
     this._bridge.send('profilingStatus', this._isProfiling);
   };
 
-  stopProfiling = () => {
+  stopProfiling: () => void = () => {
     this._isProfiling = false;
-    this._recordChangeDescriptions = false;
     for (const rendererID in this._rendererInterfaces) {
       const renderer = ((this._rendererInterfaces[
         (rendererID: any)
@@ -657,11 +1027,16 @@ export default class Agent extends EventEmitter<{
     this._bridge.send('profilingStatus', this._isProfiling);
   };
 
-  stopInspectingNative = (selected: boolean) => {
-    this._bridge.send('stopInspectingNative', selected);
+  stopInspectingNative: (selected: boolean) => void = selected => {
+    this._bridge.send('stopInspectingHost', selected);
   };
 
-  storeAsGlobal = ({count, id, path, rendererID}: StoreAsGlobalParams) => {
+  storeAsGlobal: StoreAsGlobalParams => void = ({
+    count,
+    id,
+    path,
+    rendererID,
+  }) => {
     const renderer = this._rendererInterfaces[rendererID];
     if (renderer == null) {
       console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
@@ -670,64 +1045,67 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  updateConsolePatchSettings = ({
-    appendComponentStack,
-    breakOnConsoleErrors,
-    showInlineWarningsAndErrors,
-    hideConsoleLogsInStrictMode,
-    browserTheme,
-  }: {
-    appendComponentStack: boolean,
-    breakOnConsoleErrors: boolean,
-    showInlineWarningsAndErrors: boolean,
-    hideConsoleLogsInStrictMode: boolean,
-    browserTheme: BrowserTheme,
-  }) => {
-    // If the frontend preference has change,
-    // or in the case of React Native- if the backend is just finding out the preference-
-    // then reinstall the console overrides.
-    // It's safe to call these methods multiple times, so we don't need to worry about that.
-    patchConsole({
-      appendComponentStack,
-      breakOnConsoleErrors,
-      showInlineWarningsAndErrors,
-      hideConsoleLogsInStrictMode,
-      browserTheme,
-    });
+  updateHookSettings: (settings: $ReadOnly<DevToolsHookSettings>) => void =
+    settings => {
+      // Propagate the settings, so Backend can subscribe to it and modify hook
+      this.emit('updateHookSettings', settings);
+    };
+
+  getHookSettings: () => void = () => {
+    this.emit('getHookSettings');
   };
 
-  updateComponentFilters = (componentFilters: Array<ComponentFilter>) => {
+  onHookSettings: (settings: $ReadOnly<DevToolsHookSettings>) => void =
+    settings => {
+      this._bridge.send('hookSettings', settings);
+    };
+
+  updateComponentFilters: (componentFilters: Array<ComponentFilter>) => void =
+    componentFilters => {
+      for (const rendererIDString in this._rendererInterfaces) {
+        const rendererID = +rendererIDString;
+        const renderer = ((this._rendererInterfaces[
+          (rendererID: any)
+        ]: any): RendererInterface);
+        if (this._lastSelectedRendererID === rendererID) {
+          // Changing component filters will unmount and remount the DevTools tree.
+          // Track the last selection's path so we can restore the selection.
+          const path = renderer.getPathForElement(this._lastSelectedElementID);
+          if (path !== null) {
+            renderer.setTrackedPath(path);
+            this._persistedSelection = {
+              rendererID,
+              path,
+            };
+          }
+        }
+        renderer.updateComponentFilters(componentFilters);
+      }
+    };
+
+  getEnvironmentNames: () => void = () => {
+    let accumulatedNames = null;
     for (const rendererID in this._rendererInterfaces) {
-      const renderer = ((this._rendererInterfaces[
-        (rendererID: any)
-      ]: any): RendererInterface);
-      renderer.updateComponentFilters(componentFilters);
+      const renderer = this._rendererInterfaces[+rendererID];
+      const names = renderer.getEnvironmentNames();
+      if (accumulatedNames === null) {
+        accumulatedNames = names;
+      } else {
+        for (let i = 0; i < names.length; i++) {
+          if (accumulatedNames.indexOf(names[i]) === -1) {
+            accumulatedNames.push(names[i]);
+          }
+        }
+      }
     }
+    this._bridge.send('environmentNames', accumulatedNames || []);
   };
 
-  viewAttributeSource = ({id, path, rendererID}: CopyElementParams) => {
-    const renderer = this._rendererInterfaces[rendererID];
-    if (renderer == null) {
-      console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
-    } else {
-      renderer.prepareViewAttributeSource(id, path);
-    }
-  };
-
-  viewElementSource = ({id, rendererID}: ElementAndRendererID) => {
-    const renderer = this._rendererInterfaces[rendererID];
-    if (renderer == null) {
-      console.warn(`Invalid renderer id "${rendererID}" for element "${id}"`);
-    } else {
-      renderer.prepareViewElementSource(id);
-    }
-  };
-
-  onTraceUpdates = (nodes: Set<NativeType>) => {
+  onTraceUpdates: (nodes: Set<HostInstance>) => void = nodes => {
     this.emit('traceUpdates', nodes);
   };
 
-  onFastRefreshScheduled = () => {
+  onFastRefreshScheduled: () => void = () => {
     if (__DEBUG__) {
       debug('onFastRefreshScheduled');
     }
@@ -735,7 +1113,7 @@ export default class Agent extends EventEmitter<{
     this._bridge.send('fastRefreshScheduled');
   };
 
-  onHookOperations = (operations: Array<number>) => {
+  onHookOperations: (operations: Array<number>) => void = operations => {
     if (__DEBUG__) {
       debug(
         'onHookOperations',
@@ -781,7 +1159,7 @@ export default class Agent extends EventEmitter<{
           if (prevMatchID !== nextMatchID) {
             if (nextMatchID !== null) {
               // We moved forward, unlocking a deeper node.
-              this._bridge.send('selectFiber', nextMatchID);
+              this._bridge.send('selectElement', nextMatchID);
             }
           }
           if (nextMatch !== null && nextMatch.isFullMatch) {
@@ -796,11 +1174,21 @@ export default class Agent extends EventEmitter<{
     }
   };
 
-  onUnsupportedRenderer(rendererID: number) {
-    this._bridge.send('unsupportedRendererVersion', rendererID);
+  getIfHasUnsupportedRendererVersion: () => void = () => {
+    this.emit('getIfHasUnsupportedRendererVersion');
+  };
+
+  onUnsupportedRenderer() {
+    this._bridge.send('unsupportedRendererVersion');
   }
 
-  _throttledPersistSelection = throttle((rendererID: number, id: number) => {
+  _persistSelectionTimerScheduled: boolean = false;
+  _lastSelectedRendererID: number = -1;
+  _lastSelectedElementID: number = -1;
+  _persistSelection: any = () => {
+    this._persistSelectionTimerScheduled = false;
+    const rendererID = this._lastSelectedRendererID;
+    const id = this._lastSelectedElementID;
     // This is throttled, so both renderer and selected ID
     // might not be available by the time we read them.
     // This is why we need the defensive checks here.
@@ -814,5 +1202,5 @@ export default class Agent extends EventEmitter<{
     } else {
       sessionStorageRemoveItem(SESSION_STORAGE_LAST_SELECTION_KEY);
     }
-  }, 1000);
+  };
 }

@@ -1,11 +1,13 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *
  * @flow
  */
+
+import type {ReactContext, RefObject} from 'shared/ReactTypes';
 
 import * as React from 'react';
 import {
@@ -25,11 +27,11 @@ import type {
   ViewState,
   ReactEventInfo,
 } from './types';
-import type {RefObject} from 'shared/ReactTypes';
 
 export type Context = {
   file: File | null,
   inMemoryTimelineData: Array<TimelineData> | null,
+  isPerformanceTracksSupported: boolean,
   isTimelineSupported: boolean,
   searchInputContainerRef: RefObject,
   setFile: (file: File | null) => void,
@@ -38,14 +40,16 @@ export type Context = {
   selectedEvent: ReactEventInfo,
 };
 
-const TimelineContext = createContext<Context>(((null: any): Context));
+const TimelineContext: ReactContext<Context> = createContext<Context>(
+  ((null: any): Context),
+);
 TimelineContext.displayName = 'TimelineContext';
 
 type Props = {
   children: React$Node,
 };
 
-function TimelineContextController({children}: Props) {
+function TimelineContextController({children}: Props): React.Node {
   const searchInputContainerRef = useRef(null);
   const [file, setFile] = useState<string | null>(null);
 
@@ -60,6 +64,18 @@ function TimelineContextController({children}: Props) {
     },
     function getState() {
       return store.rootSupportsTimelineProfiling;
+    },
+  );
+
+  const isPerformanceTracksSupported = useSyncExternalStore<boolean>(
+    function subscribe(callback) {
+      store.addListener('rootSupportsPerformanceTracks', callback);
+      return function unsubscribe() {
+        store.removeListener('rootSupportsPerformanceTracks', callback);
+      };
+    },
+    function getState() {
+      return store.rootSupportsPerformanceTracks;
     },
   );
 
@@ -79,8 +95,10 @@ function TimelineContextController({children}: Props) {
 
   // Recreate view state any time new profiling data is imported.
   const viewState = useMemo<ViewState>(() => {
-    const horizontalScrollStateChangeCallbacks: Set<HorizontalScrollStateChangeCallback> = new Set();
-    const searchRegExpStateChangeCallbacks: Set<SearchRegExpStateChangeCallback> = new Set();
+    const horizontalScrollStateChangeCallbacks: Set<HorizontalScrollStateChangeCallback> =
+      new Set();
+    const searchRegExpStateChangeCallbacks: Set<SearchRegExpStateChangeCallback> =
+      new Set();
 
     const horizontalScrollState = {
       offset: 0,
@@ -130,6 +148,7 @@ function TimelineContextController({children}: Props) {
     () => ({
       file,
       inMemoryTimelineData,
+      isPerformanceTracksSupported,
       isTimelineSupported,
       searchInputContainerRef,
       setFile,
@@ -140,6 +159,7 @@ function TimelineContextController({children}: Props) {
     [
       file,
       inMemoryTimelineData,
+      isPerformanceTracksSupported,
       isTimelineSupported,
       setFile,
       viewState,

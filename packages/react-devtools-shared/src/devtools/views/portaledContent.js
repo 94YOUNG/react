@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,8 +17,8 @@ import ThemeProvider from './ThemeProvider';
 export type Props = {portalContainer?: Element, ...};
 
 export default function portaledContent(
-  Component: React$StatelessFunctionalComponent<any>,
-): React$StatelessFunctionalComponent<any> {
+  Component: component(...props: any),
+): component(...props: any) {
   return function PortaledContent({portalContainer, ...rest}: Props) {
     const store = useContext(StoreContext);
 
@@ -36,7 +36,12 @@ export default function portaledContent(
         <ThemeProvider>
           <div
             data-react-devtools-portal-root={true}
-            style={{width: '100vw', height: '100vh'}}>
+            style={{
+              width: '100vw',
+              height: '100vh',
+              containerName: 'devtools',
+              containerType: 'inline-size',
+            }}>
             {children}
           </div>
         </ThemeProvider>

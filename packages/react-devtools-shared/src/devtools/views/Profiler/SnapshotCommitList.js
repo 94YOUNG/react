@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -33,7 +33,7 @@ export type ItemData = {
 };
 
 type Props = {
-  commitData: CommitDataFrontend,
+  commitData: $ReadOnlyArray<CommitDataFrontend>,
   commitTimes: Array<number>,
   filteredCommitIndices: Array<number>,
   selectedCommitIndex: number | null,
@@ -50,7 +50,7 @@ export default function SnapshotCommitList({
   selectedFilteredCommitIndex,
   selectCommitIndex,
   totalDurations,
-}: Props) {
+}: Props): React.Node {
   return (
     <AutoSizer>
       {({height, width}) => (
@@ -71,7 +71,7 @@ export default function SnapshotCommitList({
 }
 
 type ListProps = {
-  commitData: CommitDataFrontend,
+  commitData: $ReadOnlyArray<CommitDataFrontend>,
   commitTimes: Array<number>,
   height: number,
   filteredCommitIndices: Array<number>,
@@ -99,6 +99,7 @@ function List({
   totalDurations,
   width,
 }: ListProps) {
+  // $FlowFixMe[incompatible-use]
   const listRef = useRef<FixedSizeList<ItemData> | null>(null);
   const divRef = useRef<HTMLDivElement | null>(null);
   const prevCommitIndexRef = useRef<number | null>(null);

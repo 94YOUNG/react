@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,6 +7,7 @@
  * @flow
  */
 
+import type {ReactContext} from 'shared/ReactTypes';
 import * as React from 'react';
 import {
   createContext,
@@ -55,12 +56,11 @@ type ModalDialogContextType = {
   dispatch: Dispatch,
 };
 
-const ModalDialogContext = createContext<ModalDialogContextType>(
-  ((null: any): ModalDialogContextType),
-);
+const ModalDialogContext: ReactContext<ModalDialogContextType> =
+  createContext<ModalDialogContextType>(((null: any): ModalDialogContextType));
 ModalDialogContext.displayName = 'ModalDialogContext';
 
-function dialogReducer(state, action) {
+function dialogReducer(state: State, action: Action) {
   switch (action.type) {
     case 'HIDE':
       return {
@@ -75,7 +75,7 @@ function dialogReducer(state, action) {
             content: action.content,
             id: action.id,
             title: action.title || null,
-          },
+          } as Dialog,
         ],
       };
     default:
@@ -87,7 +87,7 @@ type Props = {
   children: React$Node,
 };
 
-function ModalDialogContextController({children}: Props) {
+function ModalDialogContextController({children}: Props): React.Node {
   const [state, dispatch] = useReducer<State, State, Action>(dialogReducer, {
     dialogs: [],
   });
@@ -107,7 +107,7 @@ function ModalDialogContextController({children}: Props) {
   );
 }
 
-function ModalDialog(_: {}) {
+function ModalDialog(_: {}): React.Node {
   const {dialogs, dispatch} = useContext(ModalDialogContext);
 
   if (dialogs.length === 0) {

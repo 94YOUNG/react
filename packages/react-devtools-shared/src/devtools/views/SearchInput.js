@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -35,14 +35,16 @@ export default function SearchInput({
   searchResultsCount,
   searchText,
   testName,
-}: Props) {
+}: Props): React.Node {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const resetSearch = () => search('');
 
+  // $FlowFixMe[missing-local-annot]
   const handleChange = ({currentTarget}) => {
     search(currentTarget.value);
   };
+  // $FlowFixMe[missing-local-annot]
   const handleKeyPress = ({key, shiftKey}) => {
     if (key === 'Enter') {
       if (shiftKey) {
@@ -62,8 +64,9 @@ export default function SearchInput({
     const handleKeyDown = (event: KeyboardEvent) => {
       const {key, metaKey} = event;
       if (key === 'f' && metaKey) {
-        if (inputRef.current !== null) {
-          inputRef.current.focus();
+        const inputElement = inputRef.current;
+        if (inputElement !== null) {
+          inputElement.focus();
           event.preventDefault();
           event.stopPropagation();
         }
@@ -73,10 +76,14 @@ export default function SearchInput({
     // It's important to listen to the ownerDocument to support the browser extension.
     // Here we use portals to render individual tabs (e.g. Profiler),
     // and the root document might belong to a different window.
-    const ownerDocument = inputRef.current.ownerDocument;
-    ownerDocument.addEventListener('keydown', handleKeyDown);
+    const ownerDocumentElement = inputRef.current.ownerDocument.documentElement;
+    if (ownerDocumentElement === null) {
+      return;
+    }
+    ownerDocumentElement.addEventListener('keydown', handleKeyDown);
 
-    return () => ownerDocument.removeEventListener('keydown', handleKeyDown);
+    return () =>
+      ownerDocumentElement.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   return (
@@ -102,7 +109,6 @@ export default function SearchInput({
           <div className={styles.LeftVRule} />
           <Button
             data-testname={testName ? `${testName}-PreviousButton` : undefined}
-            className={styles.IconButton}
             disabled={!searchText}
             onClick={goToPreviousResult}
             title={
@@ -115,7 +121,6 @@ export default function SearchInput({
           </Button>
           <Button
             data-testname={testName ? `${testName}-NextButton` : undefined}
-            className={styles.IconButton}
             disabled={!searchText}
             onClick={goToNextResult}
             title={
@@ -127,7 +132,6 @@ export default function SearchInput({
           </Button>
           <Button
             data-testname={testName ? `${testName}-ResetButton` : undefined}
-            className={styles.IconButton}
             disabled={!searchText}
             onClick={resetSearch}
             title="Reset search">

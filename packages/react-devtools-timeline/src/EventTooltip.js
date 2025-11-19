@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -15,11 +15,12 @@ import type {
   ReactComponentMeasure,
   ReactEventInfo,
   ReactMeasure,
-  TimelineData,
+  ReactMeasureType,
   SchedulingEvent,
   Snapshot,
   SuspenseEvent,
   ThrownError,
+  TimelineData,
   UserTimingMark,
 } from './types';
 
@@ -45,7 +46,7 @@ type Props = {
   width: number,
 };
 
-function getReactMeasureLabel(type): string | null {
+function getReactMeasureLabel(type: ReactMeasureType): string | null {
   switch (type) {
     case 'commit':
       return 'react commit';
@@ -69,7 +70,7 @@ export default function EventTooltip({
   hoveredEvent,
   origin,
   width,
-}: Props) {
+}: Props): React.Node {
   const ref = useSmartTooltip({
     canvasRef,
     mouseX: origin.x,
@@ -248,7 +249,7 @@ const TooltipNetworkMeasure = ({
   let urlToDisplay = url;
   if (urlToDisplay.length > MAX_TOOLTIP_TEXT_LENGTH) {
     const half = Math.floor(MAX_TOOLTIP_TEXT_LENGTH / 2);
-    urlToDisplay = url.substr(0, half) + '…' + url.substr(url.length - half);
+    urlToDisplay = url.slice(0, half) + '…' + url.slice(url.length - half);
   }
 
   const timestampBegin = sendRequestTimestamp;

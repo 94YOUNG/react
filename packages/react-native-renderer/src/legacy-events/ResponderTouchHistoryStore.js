@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -207,6 +207,7 @@ const ResponderTouchHistoryStore = {
       touchHistory.numberActiveTouches = nativeEvent.touches.length;
       if (touchHistory.numberActiveTouches === 1) {
         touchHistory.indexOfSingleActiveTouch =
+          // $FlowFixMe[incompatible-type] might be null according to type
           nativeEvent.touches[0].identifier;
       }
     } else if (isEndish(topLevelType)) {

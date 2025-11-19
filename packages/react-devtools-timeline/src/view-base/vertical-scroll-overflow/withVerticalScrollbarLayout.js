@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,7 +7,7 @@
  * @flow
  */
 
-import type {Layouter} from '../layouter';
+import type {LayoutInfo, Layouter} from '../layouter';
 
 /**
  * Assumes {@param layout} will only contain 2 views.
@@ -25,7 +25,7 @@ export const withVerticalScrollbarLayout: Layouter = (
     ? scrollbarLayoutInfo.view.desiredSize().width
     : 0;
 
-  const laidOutContentLayoutInfo = {
+  const laidOutContentLayoutInfo: LayoutInfo = {
     ...contentLayoutInfo,
     frame: {
       origin: contentLayoutInfo.view.frame.origin,
@@ -35,7 +35,7 @@ export const withVerticalScrollbarLayout: Layouter = (
       },
     },
   };
-  const laidOutScrollbarLayoutInfo = {
+  const laidOutScrollbarLayoutInfo: LayoutInfo = {
     ...scrollbarLayoutInfo,
     frame: {
       origin: {

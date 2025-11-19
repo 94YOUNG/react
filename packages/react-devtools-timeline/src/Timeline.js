@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -32,10 +32,11 @@ import {TimelineSearchContextController} from './TimelineSearchContext';
 
 import styles from './Timeline.css';
 
-export function Timeline(_: {}) {
+export function Timeline(_: {}): React.Node {
   const {
     file,
     inMemoryTimelineData,
+    isPerformanceTracksSupported,
     isTimelineSupported,
     setFile,
     viewState,
@@ -100,7 +101,11 @@ export function Timeline(_: {}) {
   } else if (isTimelineSupported) {
     content = <NoProfilingData />;
   } else {
-    content = <TimelineNotSupported />;
+    content = (
+      <TimelineNotSupported
+        isPerformanceTracksSupported={isPerformanceTracksSupported}
+      />
+    );
   }
 
   return (
@@ -117,6 +122,7 @@ const ProcessingData = () => (
   </div>
 );
 
+// $FlowFixMe[missing-local-annot]
 const CouldNotLoadProfile = ({error, onFileSelect}) => (
   <div className={styles.EmptyStateContainer}>
     <div className={styles.Header}>Could not load profile</div>

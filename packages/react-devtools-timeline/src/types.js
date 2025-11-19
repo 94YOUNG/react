@@ -1,27 +1,22 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *
  * @flow
  */
-
+import type {StackFrame as ErrorStackFrame} from 'error-stack-parser';
 import type {ScrollState} from './view-base/utils/scrollState';
 
 // Source: https://github.com/facebook/flow/issues/4002#issuecomment-323612798
 // eslint-disable-next-line no-unused-vars
 type Return_<R, F: (...args: Array<any>) => R> = R;
 /** Get return type of a function. */
-export type Return<T> = Return_<*, T>;
+export type Return<T> = Return_<mixed, T>;
 
 // Project types
-
-export type ErrorStackFrame = {
-  fileName: string,
-  lineNumber: number,
-  columnNumber: number,
-};
+export type {ErrorStackFrame};
 
 export type Milliseconds = number;
 
@@ -84,7 +79,7 @@ export type SchedulingEvent =
   | ReactScheduleRenderEvent
   | ReactScheduleStateUpdateEvent
   | ReactScheduleForceUpdateEvent;
-export type SchedulingEventType = $PropertyType<SchedulingEvent, 'type'>;
+export type SchedulingEventType = SchedulingEvent['type'];
 
 export type ReactMeasureType =
   | 'commit'
@@ -192,7 +187,7 @@ export type ViewState = {
 };
 
 export type InternalModuleSourceToRanges = Map<
-  string,
+  string | void,
   Array<[ErrorStackFrame, ErrorStackFrame]>,
 >;
 
@@ -224,7 +219,7 @@ export type TimelineDataExport = {
   duration: number,
   flamechart: Flamechart,
   internalModuleSourceToRanges: Array<
-    [string, Array<[ErrorStackFrame, ErrorStackFrame]>],
+    [string | void, Array<[ErrorStackFrame, ErrorStackFrame]>],
   >,
   laneToLabelKeyValueArray: Array<[ReactLane, string]>,
   laneToReactMeasureKeyValueArray: Array<[ReactLane, ReactMeasure[]]>,

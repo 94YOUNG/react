@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,35 +9,22 @@
 
 import * as React from 'react';
 import {useContext} from 'react';
-import {enableProfilerChangedHookIndices} from 'react-devtools-feature-flags';
-import {ProfilerContext} from '../Profiler/ProfilerContext';
+
+import {ProfilerContext} from './ProfilerContext';
 import {StoreContext} from '../context';
 
 import styles from './WhatChanged.css';
-
-function hookIndicesToString(indices: Array<number>): string {
-  // This is debatable but I think 1-based might ake for a nicer UX.
-  const numbers = indices.map(value => value + 1);
-
-  switch (numbers.length) {
-    case 0:
-      return 'No hooks changed';
-    case 1:
-      return `Hook ${numbers[0]} changed`;
-    case 2:
-      return `Hooks ${numbers[0]} and ${numbers[1]} changed`;
-    default:
-      return `Hooks ${numbers.slice(0, numbers.length - 1).join(', ')} and ${
-        numbers[numbers.length - 1]
-      } changed`;
-  }
-}
+import HookChangeSummary from './HookChangeSummary';
 
 type Props = {
   fiberID: number,
+  displayMode?: 'detailed' | 'compact',
 };
 
-export default function WhatChanged({fiberID}: Props) {
+export default function WhatChanged({
+  fiberID,
+  displayMode = 'detailed',
+}: Props): React.Node {
   const {profilerStore} = useContext(StoreContext);
   const {rootID, selectedCommitIndex} = useContext(ProfilerContext);
 
@@ -63,14 +50,8 @@ export default function WhatChanged({fiberID}: Props) {
     return null;
   }
 
-  const {
-    context,
-    didHooksChange,
-    hooks,
-    isFirstMount,
-    props,
-    state,
-  } = changeDescription;
+  const {context, didHooksChange, hooks, isFirstMount, props, state} =
+    changeDescription;
 
   if (isFirstMount) {
     return (
@@ -109,10 +90,15 @@ export default function WhatChanged({fiberID}: Props) {
   }
 
   if (didHooksChange) {
-    if (enableProfilerChangedHookIndices && Array.isArray(hooks)) {
+    if (Array.isArray(hooks)) {
       changes.push(
         <div key="hooks" className={styles.Item}>
-          • {hookIndicesToString(hooks)}
+          <HookChangeSummary
+            hooks={hooks}
+            fiberID={fiberID}
+            state={state}
+            displayMode={displayMode}
+          />
         </div>,
       );
     } else {
@@ -159,7 +145,7 @@ export default function WhatChanged({fiberID}: Props) {
   }
 
   return (
-    <div className={styles.Component}>
+    <div>
       <label className={styles.Label}>Why did this render?</label>
       {changes}
     </div>

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,21 +8,34 @@
  */
 
 import * as React from 'react';
-import {useContext} from 'react';
-import {TreeDispatcherContext, TreeStateContext} from './TreeContext';
+import {useState, useContext, useCallback} from 'react';
 
-import SearchInput from '../SearchInput';
+import SearchInput from 'react-devtools-shared/src/devtools/views/SearchInput';
+import {
+  TreeDispatcherContext,
+  TreeStateContext,
+} from 'react-devtools-shared/src/devtools/views/Components/TreeContext';
 
-type Props = {};
+export default function ComponentSearchInput(): React.Node {
+  const [localSearchQuery, setLocalSearchQuery] = useState('');
+  const {searchIndex, searchResults} = useContext(TreeStateContext);
+  const transitionDispatch = useContext(TreeDispatcherContext);
 
-export default function ComponentSearchInput(props: Props) {
-  const {searchIndex, searchResults, searchText} = useContext(TreeStateContext);
-  const dispatch = useContext(TreeDispatcherContext);
-
-  const search = text => dispatch({type: 'SET_SEARCH_TEXT', payload: text});
-  const goToNextResult = () => dispatch({type: 'GO_TO_NEXT_SEARCH_RESULT'});
-  const goToPreviousResult = () =>
-    dispatch({type: 'GO_TO_PREVIOUS_SEARCH_RESULT'});
+  const search = useCallback(
+    (text: string) => {
+      setLocalSearchQuery(text);
+      transitionDispatch({type: 'SET_SEARCH_TEXT', payload: text});
+    },
+    [setLocalSearchQuery, transitionDispatch],
+  );
+  const goToNextResult = useCallback(
+    () => transitionDispatch({type: 'GO_TO_NEXT_SEARCH_RESULT'}),
+    [transitionDispatch],
+  );
+  const goToPreviousResult = useCallback(
+    () => transitionDispatch({type: 'GO_TO_PREVIOUS_SEARCH_RESULT'}),
+    [transitionDispatch],
+  );
 
   return (
     <SearchInput
@@ -32,7 +45,7 @@ export default function ComponentSearchInput(props: Props) {
       search={search}
       searchIndex={searchIndex}
       searchResultsCount={searchResults.length}
-      searchText={searchText}
+      searchText={localSearchQuery}
       testName="ComponentSearchInput"
     />
   );
